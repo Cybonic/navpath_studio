@@ -1,0 +1,27 @@
+{
+  "name": "navpath-studio-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "CHOKIDAR_USEPOLLING=true vite --host 0.0.0.0",
+    "build": "tsc && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "konva": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-konva": "latest",
+    "use-image": "latest",
+    "zustand": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "vitest": "latest"
+  }
+}
