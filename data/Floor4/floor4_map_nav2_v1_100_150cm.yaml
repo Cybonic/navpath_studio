@@ -1,0 +1,7 @@
+image: floor4_map_nav2_v1_100_150cm.pgm
+mode: trinary
+resolution: 0.05
+origin: [-10, -10, 0]
+negate: 0
+occupied_thresh: 0.75
+free_thresh: 0.15
