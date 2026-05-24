@@ -2,7 +2,7 @@ import type { ToolMode } from '../types';
 import { useStudioStore } from '../store/useStudioStore';
 
 const tools: Array<{ id: ToolMode; label: string }> = [
-  { id: 'line', label: 'Line' },
+  { id: 'line', label: 'Path' },
   { id: 'arc', label: 'Arc' },
   { id: 'action', label: 'Action' },
   { id: 'pan', label: 'Pan' },

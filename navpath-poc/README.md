@@ -17,7 +17,12 @@ later Nav2 integration.
 - Full-screen workspace map canvas.
 - Map stays centered by default, including while zooming.
 - Zoom and pan the map canvas with buttons, wheel zoom, and mouse dragging.
-- Draw lines, half-arcs, and action nodes.
+- Draw sequential path points where each new point connects from the previous
+  point.
+- Edit existing trajectory points in a numeric point table.
+- Draw sequential arc segments from the last trajectory point to the next point.
+- Edit arc radius and clockwise direction in the segment table.
+- Draw action nodes.
 - Generate waypoints at configurable meter spacing.
 - Export `nav_msgs/Path`-compatible JSON and YAML.
 - Run the full app from one Docker container.

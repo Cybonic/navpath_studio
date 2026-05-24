@@ -168,6 +168,70 @@ button:hover {
   margin: 0.4rem 0;
 }
 
+.trajectoryEditor {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 0.75rem;
+}
+
+.sectionHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sectionHeader h3 {
+  margin: 0;
+}
+
+.pointTable {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.pointRow {
+  align-items: center;
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr) minmax(0, 1fr) 2.2rem;
+  gap: 0.35rem;
+}
+
+.pointHeader {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.pointRow input {
+  min-width: 0;
+  width: 100%;
+}
+
+.pointRow button {
+  padding: 0.35rem 0.45rem;
+}
+
+.segmentList {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.segmentEditor {
+  border: 1px solid #e2e8f0;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.55rem;
+}
+
+.segmentEditor label {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.checkboxLabel {
+  align-items: center;
+  display: flex !important;
+}
+
 .exportPanel {
   border-left: 0;
   border-right: 0;

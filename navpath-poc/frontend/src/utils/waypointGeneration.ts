@@ -52,6 +52,41 @@ export function generateArcWaypoints(
   });
 }
 
+export function generateArcThroughEndpointsWaypoints(
+  start: WorldPoint,
+  end: WorldPoint,
+  radius: number,
+  clockwise: boolean,
+  spacing: number,
+): Waypoint[] {
+  const chord = distance(start, end);
+  if (chord < EPSILON) {
+    return [{ ...start, yaw: 0 }];
+  }
+
+  const safeRadius = Math.max(radius, chord / 2);
+  const midpoint = {
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2,
+  };
+  const halfChord = chord / 2;
+  const centerDistance = Math.sqrt(Math.max(safeRadius * safeRadius - halfChord * halfChord, 0));
+  const unit = {
+    x: (end.x - start.x) / chord,
+    y: (end.y - start.y) / chord,
+  };
+  const normal = { x: -unit.y, y: unit.x };
+  const sign = clockwise ? -1 : 1;
+  const center = {
+    x: midpoint.x + normal.x * centerDistance * sign,
+    y: midpoint.y + normal.y * centerDistance * sign,
+  };
+  const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+  const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+
+  return generateArcWaypoints(center, safeRadius, startAngle, endAngle, clockwise, spacing);
+}
+
 function normalizeArcDelta(startAngle: number, endAngle: number, clockwise: boolean): number {
   const twoPi = Math.PI * 2;
   if (clockwise) {

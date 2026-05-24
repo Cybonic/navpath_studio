@@ -36,6 +36,20 @@ export interface Waypoint extends WorldPoint {
 
 export type ToolMode = 'select' | 'pan' | 'line' | 'arc' | 'action';
 
+export interface LineTrajectorySegment {
+  id: string;
+  type: 'line';
+}
+
+export interface ArcTrajectorySegment {
+  id: string;
+  type: 'arc';
+  radius: number;
+  clockwise: boolean;
+}
+
+export type TrajectorySegment = LineTrajectorySegment | ArcTrajectorySegment;
+
 export interface LinePrimitive {
   id: string;
   type: 'line';

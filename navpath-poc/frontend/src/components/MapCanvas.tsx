@@ -3,10 +3,8 @@ import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from 're
 import useImage from 'use-image';
 import type Konva from 'konva';
 
-import { useStudioStore } from '../store/useStudioStore';
+import { buildTrajectoryWaypoints, useStudioStore } from '../store/useStudioStore';
 import { createActionNode } from '../tools/actionNodeTool';
-import { createArc } from '../tools/arcTool';
-import { createLine } from '../tools/lineTool';
 import { worldToPixel, pixelToWorld } from '../utils/coordinates';
 
 const DEFAULT_VIEWPORT_WIDTH = 960;
@@ -16,6 +14,8 @@ export function MapCanvas() {
   const map = useStudioStore((state) => state.map);
   const imageDataUrl = useStudioStore((state) => state.imageDataUrl);
   const elements = useStudioStore((state) => state.elements);
+  const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
+  const trajectorySegments = useStudioStore((state) => state.trajectorySegments);
   const tool = useStudioStore((state) => state.tool);
   const spacing = useStudioStore((state) => state.spacing);
   const zoom = useStudioStore((state) => state.zoom);
@@ -25,6 +25,8 @@ export function MapCanvas() {
   const setDraftPoint = useStudioStore((state) => state.setDraftPoint);
   const setCursorWorld = useStudioStore((state) => state.setCursorWorld);
   const addElement = useStudioStore((state) => state.addElement);
+  const addTrajectoryPoint = useStudioStore((state) => state.addTrajectoryPoint);
+  const addArcTrajectoryPoint = useStudioStore((state) => state.addArcTrajectoryPoint);
   const setSelectedId = useStudioStore((state) => state.setSelectedId);
   const setZoom = useStudioStore((state) => state.setZoom);
   const setPan = useStudioStore((state) => state.setPan);
@@ -109,15 +111,12 @@ export function MapCanvas() {
       addElement(createActionNode(point, elements.filter((element) => element.type === 'action').length));
       return;
     }
-    if (!draftPoint) {
-      setDraftPoint(point);
+    if (tool === 'line') {
+      addTrajectoryPoint(point);
       return;
     }
-    if (tool === 'line') {
-      addElement(createLine(draftPoint, point, spacing));
-    }
     if (tool === 'arc') {
-      addElement(createArc(draftPoint, point, spacing));
+      addArcTrajectoryPoint(point);
     }
   };
 
@@ -160,6 +159,7 @@ export function MapCanvas() {
             onDragEnd={handlePanDragEnd}
           >
             {image && <KonvaImage image={image} width={mapWidth} height={mapHeight} />}
+            <TrajectoryView points={trajectoryPoints} segments={trajectorySegments} spacing={spacing} map={map} scale={scale} />
             {elements.map((element) => (
               <ElementView
                 key={element.id}
@@ -175,6 +175,47 @@ export function MapCanvas() {
         </Layer>
       </Stage>
     </div>
+  );
+}
+
+function TrajectoryView({
+  points,
+  segments,
+  spacing,
+  map,
+  scale,
+}: {
+  points: { x: number; y: number }[];
+  segments: ReturnType<typeof useStudioStore.getState>['trajectorySegments'];
+  spacing: number;
+  map: NonNullable<ReturnType<typeof useStudioStore.getState>['map']>;
+  scale: number;
+}) {
+  if (points.length === 0) return null;
+
+  const waypoints = buildTrajectoryWaypoints(points, segments, spacing);
+  const waypointPixels = waypoints.map((point) => worldToPixel(point, map));
+  const trajectoryLinePoints = waypointPixels.flatMap((point) => [point.px * scale, point.py * scale]);
+  const pixelPoints = points.map((point) => worldToPixel(point, map));
+
+  return (
+    <Group>
+      {trajectoryLinePoints.length >= 4 && (
+        <Line points={trajectoryLinePoints} stroke="#2563eb" strokeWidth={3.5} lineCap="round" lineJoin="round" />
+      )}
+      {pixelPoints.map((point, index) => (
+        <Group key={index}>
+          <Circle x={point.px * scale} y={point.py * scale} radius={5} fill="#ffffff" stroke="#2563eb" strokeWidth={2} />
+          <Text
+            x={point.px * scale + 7}
+            y={point.py * scale - 17}
+            text={`${index + 1}`}
+            fontSize={12}
+            fill="#1d4ed8"
+          />
+        </Group>
+      ))}
+    </Group>
   );
 }
 
