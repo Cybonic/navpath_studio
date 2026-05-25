@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildTrajectoryWaypoints } from './useStudioStore';
+import { buildTrajectoryWaypoints, useStudioStore } from './useStudioStore';
 
 describe('buildTrajectoryWaypoints', () => {
   it('connects points sequentially and avoids duplicate segment joins', () => {
@@ -44,4 +44,75 @@ describe('buildTrajectoryWaypoints', () => {
     expect(waypoints[waypoints.length - 1].y).toBeCloseTo(0);
     expect(waypoints.length).toBeGreaterThan(2);
   });
+
+  it('rejects impossible arc radii instead of silently clamping them', () => {
+    expect(() =>
+      buildTrajectoryWaypoints(
+        [
+          { x: 0, y: 0 },
+          { x: 1, y: 0 },
+        ],
+        [{ id: 'arc', type: 'arc', radius: 0.25, clockwise: false }],
+        0.25,
+      ),
+    ).toThrow(/radius is too small/);
+  });
 });
+
+describe('computed trajectory workflow', () => {
+  it('exports no waypoints until the rough path is computed', () => {
+    resetStoreForTest();
+    const store = useStudioStore.getState();
+
+    store.addTrajectoryPoint({ x: 0, y: 0 });
+    store.addTrajectoryPoint({ x: 1, y: 0 });
+
+    expect(useStudioStore.getState().allWaypoints()).toEqual([]);
+
+    useStudioStore.getState().computeSmoothTrajectory();
+
+    expect(useStudioStore.getState().computedTrajectory?.is_stale).toBe(false);
+    expect(useStudioStore.getState().allWaypoints().length).toBeGreaterThan(2);
+  });
+
+  it('marks computed trajectories and attached actions stale after control point edits', () => {
+    resetStoreForTest();
+    const store = useStudioStore.getState();
+
+    store.addTrajectoryPoint({ x: 0, y: 0 });
+    store.addTrajectoryPoint({ x: 1, y: 0 });
+    useStudioStore.getState().computeSmoothTrajectory();
+    useStudioStore.getState().addActionAtPoint({ x: 0.5, y: 0.02 });
+
+    const attachedAction = useStudioStore.getState().elements[0];
+    expect(attachedAction?.type).toBe('action');
+    expect(attachedAction?.type === 'action' ? attachedAction.attachment_status : null).toBe('attached');
+
+    useStudioStore.getState().updateTrajectoryPoint(1, { x: 1, y: 1 });
+
+    expect(useStudioStore.getState().computedTrajectory?.is_stale).toBe(true);
+    const staleAction = useStudioStore.getState().elements[0];
+    expect(staleAction?.type).toBe('action');
+    expect(staleAction?.type === 'action' ? staleAction.attachment_status : null).toBe('stale');
+    expect(useStudioStore.getState().allWaypoints()).toEqual([]);
+  });
+});
+
+function resetStoreForTest(): void {
+  useStudioStore.setState({
+    map: null,
+    imageDataUrl: null,
+    tool: 'line',
+    spacing: 0.1,
+    zoom: 1,
+    pan: { x: 0, y: 0 },
+    trajectoryPoints: [],
+    trajectorySegments: [],
+    computedTrajectory: null,
+    elements: [],
+    selectedId: null,
+    cursorWorld: null,
+    draftPoint: null,
+    statusMessage: null,
+  });
+}

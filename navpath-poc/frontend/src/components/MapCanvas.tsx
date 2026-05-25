@@ -3,8 +3,7 @@ import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from 're
 import useImage from 'use-image';
 import type Konva from 'konva';
 
-import { buildTrajectoryWaypoints, useStudioStore } from '../store/useStudioStore';
-import { createActionNode } from '../tools/actionNodeTool';
+import { useStudioStore } from '../store/useStudioStore';
 import { worldToPixel, pixelToWorld } from '../utils/coordinates';
 
 const DEFAULT_VIEWPORT_WIDTH = 960;
@@ -15,16 +14,15 @@ export function MapCanvas() {
   const imageDataUrl = useStudioStore((state) => state.imageDataUrl);
   const elements = useStudioStore((state) => state.elements);
   const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
-  const trajectorySegments = useStudioStore((state) => state.trajectorySegments);
+  const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
   const tool = useStudioStore((state) => state.tool);
-  const spacing = useStudioStore((state) => state.spacing);
   const zoom = useStudioStore((state) => state.zoom);
   const pan = useStudioStore((state) => state.pan);
   const draftPoint = useStudioStore((state) => state.draftPoint);
   const selectedId = useStudioStore((state) => state.selectedId);
   const setDraftPoint = useStudioStore((state) => state.setDraftPoint);
   const setCursorWorld = useStudioStore((state) => state.setCursorWorld);
-  const addElement = useStudioStore((state) => state.addElement);
+  const addActionAtPoint = useStudioStore((state) => state.addActionAtPoint);
   const addTrajectoryPoint = useStudioStore((state) => state.addTrajectoryPoint);
   const addArcTrajectoryPoint = useStudioStore((state) => state.addArcTrajectoryPoint);
   const setSelectedId = useStudioStore((state) => state.setSelectedId);
@@ -108,7 +106,7 @@ export function MapCanvas() {
       return;
     }
     if (tool === 'action') {
-      addElement(createActionNode(point, elements.filter((element) => element.type === 'action').length));
+      addActionAtPoint(point);
       return;
     }
     if (tool === 'line') {
@@ -159,7 +157,10 @@ export function MapCanvas() {
             onDragEnd={handlePanDragEnd}
           >
             {image && <KonvaImage image={image} width={mapWidth} height={mapHeight} />}
-            <TrajectoryView points={trajectoryPoints} segments={trajectorySegments} spacing={spacing} map={map} scale={scale} />
+            <RoughControlView points={trajectoryPoints} map={map} scale={scale} />
+            {computedTrajectory && (
+              <ComputedTrajectoryView trajectory={computedTrajectory} map={map} scale={scale} />
+            )}
             {elements.map((element) => (
               <ElementView
                 key={element.id}
@@ -178,30 +179,31 @@ export function MapCanvas() {
   );
 }
 
-function TrajectoryView({
+function RoughControlView({
   points,
-  segments,
-  spacing,
   map,
   scale,
 }: {
   points: { x: number; y: number }[];
-  segments: ReturnType<typeof useStudioStore.getState>['trajectorySegments'];
-  spacing: number;
   map: NonNullable<ReturnType<typeof useStudioStore.getState>['map']>;
   scale: number;
 }) {
   if (points.length === 0) return null;
 
-  const waypoints = buildTrajectoryWaypoints(points, segments, spacing);
-  const waypointPixels = waypoints.map((point) => worldToPixel(point, map));
-  const trajectoryLinePoints = waypointPixels.flatMap((point) => [point.px * scale, point.py * scale]);
   const pixelPoints = points.map((point) => worldToPixel(point, map));
+  const roughLinePoints = pixelPoints.flatMap((point) => [point.px * scale, point.py * scale]);
 
   return (
     <Group>
-      {trajectoryLinePoints.length >= 4 && (
-        <Line points={trajectoryLinePoints} stroke="#2563eb" strokeWidth={3.5} lineCap="round" lineJoin="round" />
+      {roughLinePoints.length >= 4 && (
+        <Line
+          points={roughLinePoints}
+          stroke="#64748b"
+          strokeWidth={1.8}
+          dash={[7, 6]}
+          lineCap="round"
+          lineJoin="round"
+        />
       )}
       {pixelPoints.map((point, index) => (
         <Group key={index}>
@@ -215,6 +217,51 @@ function TrajectoryView({
           />
         </Group>
       ))}
+    </Group>
+  );
+}
+
+function ComputedTrajectoryView({
+  trajectory,
+  map,
+  scale,
+}: {
+  trajectory: NonNullable<ReturnType<typeof useStudioStore.getState>['computedTrajectory']>;
+  map: NonNullable<ReturnType<typeof useStudioStore.getState>['map']>;
+  scale: number;
+}) {
+  const linePoints = trajectory.waypoints.flatMap((point) => {
+    const pixel = worldToPixel(point, map);
+    return [pixel.px * scale, pixel.py * scale];
+  });
+  const color = trajectory.is_stale ? '#f59e0b' : '#0f766e';
+
+  return (
+    <Group>
+      {linePoints.length >= 4 && (
+        <Line points={linePoints} stroke={color} strokeWidth={4} lineCap="round" lineJoin="round" />
+      )}
+      {trajectory.waypoints.map((waypoint, index) => {
+        if (index % 5 !== 0 && index !== trajectory.waypoints.length - 1) return null;
+        const pixel = worldToPixel(waypoint, map);
+        const arrowLength = 9;
+        return (
+          <Group key={waypoint.id ?? index}>
+            <Circle x={pixel.px * scale} y={pixel.py * scale} radius={2.6} fill={color} />
+            <Line
+              points={[
+                pixel.px * scale,
+                pixel.py * scale,
+                pixel.px * scale + Math.cos(waypoint.yaw) * arrowLength,
+                pixel.py * scale - Math.sin(waypoint.yaw) * arrowLength,
+              ]}
+              stroke={color}
+              strokeWidth={1.5}
+              lineCap="round"
+            />
+          </Group>
+        );
+      })}
     </Group>
   );
 }

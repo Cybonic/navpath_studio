@@ -2,9 +2,9 @@ import type { ToolMode } from '../types';
 import { useStudioStore } from '../store/useStudioStore';
 
 const tools: Array<{ id: ToolMode; label: string }> = [
-  { id: 'line', label: 'Path' },
-  { id: 'arc', label: 'Arc' },
-  { id: 'action', label: 'Action' },
+  { id: 'line', label: 'Control Points' },
+  { id: 'arc', label: 'Arc Segment' },
+  { id: 'action', label: 'Snap Action' },
   { id: 'pan', label: 'Pan' },
   { id: 'select', label: 'Select' },
 ];
@@ -13,13 +13,22 @@ export function Toolbar() {
   const tool = useStudioStore((state) => state.tool);
   const spacing = useStudioStore((state) => state.spacing);
   const zoom = useStudioStore((state) => state.zoom);
+  const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
+  const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
+  const statusMessage = useStudioStore((state) => state.statusMessage);
   const setTool = useStudioStore((state) => state.setTool);
   const setSpacing = useStudioStore((state) => state.setSpacing);
+  const computeSmoothTrajectory = useStudioStore((state) => state.computeSmoothTrajectory);
   const zoomIn = useStudioStore((state) => state.zoomIn);
   const zoomOut = useStudioStore((state) => state.zoomOut);
   const resetZoom = useStudioStore((state) => state.resetZoom);
   const panBy = useStudioStore((state) => state.panBy);
   const resetPan = useStudioStore((state) => state.resetPan);
+  const trajectoryState = !computedTrajectory
+    ? 'No computed trajectory'
+    : computedTrajectory.is_stale
+      ? 'Trajectory stale'
+      : `${computedTrajectory.validation?.status ?? 'computed'} · ${computedTrajectory.waypoints.length} waypoints`;
 
   return (
     <div className="toolbar">
@@ -36,7 +45,7 @@ export function Toolbar() {
         ))}
       </div>
       <label>
-        Spacing
+        Waypoint spacing
         <input
           min="0.02"
           step="0.01"
@@ -46,6 +55,20 @@ export function Toolbar() {
         />
         m
       </label>
+      <div className="computeControls">
+        <button
+          className="computeButton"
+          disabled={trajectoryPoints.length < 2}
+          onClick={computeSmoothTrajectory}
+          type="button"
+        >
+          Compute Smooth Trajectory
+        </button>
+        <span className={computedTrajectory?.is_stale ? 'trajectoryBadge stale' : 'trajectoryBadge'}>
+          {trajectoryState}
+        </span>
+      </div>
+      {statusMessage && <span className="toolbarStatus">{statusMessage}</span>}
       <div className="zoomControls" aria-label="Map zoom controls">
         <button onClick={zoomOut} title="Zoom out" type="button">
           -

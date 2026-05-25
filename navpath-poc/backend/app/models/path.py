@@ -16,7 +16,7 @@ class Waypoint(BaseModel):
 
 class PathExportRequest(BaseModel):
     frame_id: str = "map"
-    waypoints: list[Waypoint] = Field(min_length=1)
+    waypoints: list[Waypoint] = Field(min_length=2)
 
 
 class Header(BaseModel):

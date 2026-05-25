@@ -1,6 +1,21 @@
 import { create } from 'zustand';
 
-import type { DrawingElement, MapMetadata, ToolMode, TrajectorySegment, Waypoint, WorldPoint } from '../types';
+import type {
+  ActionNode,
+  ComputedTrajectory,
+  ControlPoint,
+  DrawingElement,
+  MapMetadata,
+  RobotProfile,
+  SmoothingSettings,
+  ToolMode,
+  TrajectorySegment,
+  ValidationReport,
+  Waypoint,
+  WorldPoint,
+} from '../types';
+import { computeSmoothWaypoints } from '../utils/smoothing';
+import { validateWaypoints } from '../utils/validation';
 import { generateArcThroughEndpointsWaypoints, generateLineWaypoints } from '../utils/waypointGeneration';
 
 interface CanvasPan {
@@ -15,15 +30,22 @@ interface StudioState {
   spacing: number;
   zoom: number;
   pan: CanvasPan;
-  trajectoryPoints: WorldPoint[];
+  trajectoryPoints: ControlPoint[];
   trajectorySegments: TrajectorySegment[];
+  smoothingSettings: SmoothingSettings;
+  robotProfile: RobotProfile;
+  computedTrajectory: ComputedTrajectory | null;
   elements: DrawingElement[];
   selectedId: string | null;
   cursorWorld: WorldPoint | null;
   draftPoint: WorldPoint | null;
+  statusMessage: string | null;
   setMap: (map: MapMetadata, imageDataUrl: string) => void;
   setTool: (tool: ToolMode) => void;
   setSpacing: (spacing: number) => void;
+  setSmoothingSettings: (settings: Partial<SmoothingSettings>) => void;
+  computeSmoothTrajectory: () => void;
+  addActionAtPoint: (point: WorldPoint) => void;
   setZoom: (zoom: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
@@ -44,19 +66,61 @@ interface StudioState {
   allWaypoints: () => Waypoint[];
 }
 
+const defaultRobotProfile: RobotProfile = {
+  name: 'generic_2d_ground_robot',
+  kinematics: {
+    type: 'generic',
+    holonomic: false,
+    can_reverse: false,
+    can_rotate_in_place: true,
+  },
+  footprint: {
+    type: 'circle',
+    radius: 0.35,
+    polygon: [],
+  },
+  motion_limits: {
+    max_linear_velocity: 0.5,
+    max_angular_velocity: 1.0,
+    min_turning_radius: 0.8,
+  },
+  path_constraints: {
+    default_spacing: 0.1,
+    max_spacing: 0.3,
+    min_spacing: 0.02,
+    max_yaw_jump_deg: 30,
+  },
+  controller_profile: 'generic',
+};
+
+const defaultSmoothingSettings: SmoothingSettings = {
+  enabled: true,
+  method: 'corner_rounding',
+  waypoint_spacing: 0.1,
+  corner_radius: 0.5,
+  preserve_endpoints: true,
+  preserve_action_attachments: true,
+  min_turning_radius: defaultRobotProfile.motion_limits.min_turning_radius,
+  max_yaw_jump_deg: defaultRobotProfile.path_constraints.max_yaw_jump_deg,
+};
+
 export const useStudioStore = create<StudioState>((set, get) => ({
   map: null,
   imageDataUrl: null,
   tool: 'line',
-  spacing: 0.1,
+  spacing: defaultSmoothingSettings.waypoint_spacing,
   zoom: 1,
   pan: { x: 0, y: 0 },
   trajectoryPoints: [],
   trajectorySegments: [],
+  smoothingSettings: defaultSmoothingSettings,
+  robotProfile: defaultRobotProfile,
+  computedTrajectory: null,
   elements: [],
   selectedId: null,
   cursorWorld: null,
   draftPoint: null,
+  statusMessage: null,
   setMap: (map, imageDataUrl) =>
     set({
       map,
@@ -64,12 +128,101 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       elements: [],
       trajectoryPoints: [],
       trajectorySegments: [],
+      computedTrajectory: null,
       selectedId: null,
+      statusMessage: null,
       zoom: 1,
       pan: { x: 0, y: 0 },
     }),
-  setTool: (tool) => set({ tool, draftPoint: null }),
-  setSpacing: (spacing) => set({ spacing }),
+  setTool: (tool) => set({ tool, draftPoint: null, statusMessage: null }),
+  setSpacing: (spacing) =>
+    set((state) => ({
+      spacing: clampSpacing(spacing, state.robotProfile),
+      smoothingSettings: {
+        ...state.smoothingSettings,
+        waypoint_spacing: clampSpacing(spacing, state.robotProfile),
+      },
+      ...staleComputedState(state),
+    })),
+  setSmoothingSettings: (settings) =>
+    set((state) => {
+      const nextSettings = {
+        ...state.smoothingSettings,
+        ...settings,
+      };
+      nextSettings.waypoint_spacing = clampSpacing(nextSettings.waypoint_spacing, state.robotProfile);
+      nextSettings.corner_radius = Math.max(0.01, nextSettings.corner_radius);
+      return {
+        smoothingSettings: nextSettings,
+        spacing: nextSettings.waypoint_spacing,
+        ...staleComputedState(state),
+      };
+    }),
+  computeSmoothTrajectory: () =>
+    set((state) => {
+      const smoothResult = computeSmoothWaypoints(state.trajectoryPoints, state.smoothingSettings);
+      const validation = withAdditionalWarnings(
+        validateWaypoints(smoothResult.waypoints, {
+          map: state.map,
+          maxSpacing: state.robotProfile.path_constraints.max_spacing,
+          maxYawJumpDeg: state.smoothingSettings.max_yaw_jump_deg,
+        }),
+        smoothResult.warnings,
+      );
+      const trajectory: ComputedTrajectory = {
+        id: createId('computed_traj'),
+        source_control_point_ids: state.trajectoryPoints.map((point) => point.id),
+        smoothing_settings: state.smoothingSettings,
+        waypoints: smoothResult.waypoints,
+        is_stale: false,
+        validation,
+      };
+
+      return {
+        computedTrajectory: trajectory,
+        elements: reattachActionNodes(state.elements, trajectory),
+        selectedId: null,
+        statusMessage:
+          validation.status === 'invalid'
+            ? 'Computed trajectory has blocking validation errors.'
+            : 'Computed smooth trajectory updated.',
+      };
+    }),
+  addActionAtPoint: (point) =>
+    set((state) => {
+      const trajectory = state.computedTrajectory;
+      if (!trajectory || trajectory.is_stale || trajectory.waypoints.length < 2) {
+        return { statusMessage: 'Compute a current smooth trajectory before placing action nodes.' };
+      }
+
+      const snap = snapPointToTrajectory(point, trajectory.waypoints, 0.25);
+      if (!snap) {
+        return { statusMessage: 'Action node rejected: click closer to the computed trajectory.' };
+      }
+
+      const actionCount = state.elements.filter((element) => element.type === 'action').length;
+      const action: ActionNode = {
+        id: createId('action'),
+        type: 'action',
+        action_type: 'inspect',
+        position: snap.position,
+        yaw: snap.yaw,
+        label: `Action ${actionCount + 1}`,
+        trajectory_id: trajectory.id,
+        arc_length_s_m: snap.arcLength,
+        waypoint_index: snap.waypointIndex,
+        source_waypoint_id: trajectory.waypoints[snap.waypointIndex]?.id,
+        placement_mode: 'snap_to_trajectory',
+        attachment_status: 'attached',
+        metadata: {},
+      };
+
+      return {
+        elements: [...state.elements, action],
+        selectedId: action.id,
+        statusMessage: 'Action node snapped to computed trajectory.',
+      };
+    }),
   setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
   zoomIn: () => set((state) => ({ zoom: clampZoom(state.zoom * 1.2) })),
   zoomOut: () => set((state) => ({ zoom: clampZoom(state.zoom / 1.2) })),
@@ -79,24 +232,26 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   resetPan: () => set({ pan: { x: 0, y: 0 } }),
   addTrajectoryPoint: (point) =>
     set((state) => ({
-      trajectoryPoints: [...state.trajectoryPoints, point],
+      trajectoryPoints: [...state.trajectoryPoints, { id: createId('cp'), ...point }],
       trajectorySegments:
         state.trajectoryPoints.length === 0
           ? []
-          : [...state.trajectorySegments, { id: crypto.randomUUID(), type: 'line' }],
+          : [...state.trajectorySegments, { id: createId('segment'), type: 'line' }],
       selectedId: null,
       draftPoint: null,
+      statusMessage: null,
+      ...staleComputedState(state),
     })),
   addArcTrajectoryPoint: (point) =>
     set((state) => ({
-      trajectoryPoints: [...state.trajectoryPoints, point],
+      trajectoryPoints: [...state.trajectoryPoints, { id: createId('cp'), ...point }],
       trajectorySegments:
         state.trajectoryPoints.length === 0
           ? []
           : [
               ...state.trajectorySegments,
               {
-                id: crypto.randomUUID(),
+                id: createId('segment'),
                 type: 'arc',
                 radius: defaultArcRadius(state.trajectoryPoints[state.trajectoryPoints.length - 1], point),
                 clockwise: false,
@@ -104,25 +259,40 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             ],
       selectedId: null,
       draftPoint: null,
+      statusMessage: null,
+      ...staleComputedState(state),
     })),
   updateTrajectoryPoint: (index, point) =>
     set((state) => ({
       trajectoryPoints: state.trajectoryPoints.map((existing, existingIndex) =>
-        existingIndex === index ? point : existing,
+        existingIndex === index ? { ...existing, ...point } : existing,
       ),
+      ...staleComputedState(state),
     })),
   updateTrajectorySegment: (index, segment) =>
     set((state) => ({
       trajectorySegments: state.trajectorySegments.map((existing, existingIndex) =>
-        existingIndex === index ? normalizeSegment(segment, state.trajectoryPoints[index], state.trajectoryPoints[index + 1]) : existing,
+        existingIndex === index
+          ? normalizeSegment(segment, state.trajectoryPoints[index], state.trajectoryPoints[index + 1])
+          : existing,
       ),
+      ...staleComputedState(state),
     })),
   removeTrajectoryPoint: (index) =>
     set((state) => ({
       trajectoryPoints: state.trajectoryPoints.filter((_, existingIndex) => existingIndex !== index),
       trajectorySegments: removePointSegments(state.trajectorySegments, index),
+      ...staleComputedState(state),
     })),
-  clearTrajectory: () => set({ trajectoryPoints: [], trajectorySegments: [], draftPoint: null }),
+  clearTrajectory: () =>
+    set((state) => ({
+      trajectoryPoints: [],
+      trajectorySegments: [],
+      computedTrajectory: null,
+      elements: markActionNodes(state.elements, 'invalid'),
+      draftPoint: null,
+      statusMessage: null,
+    })),
   addElement: (element) =>
     set((state) => ({
       elements: [...state.elements, element],
@@ -133,22 +303,70 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setCursorWorld: (point) => set({ cursorWorld: point }),
   setDraftPoint: (point) => set({ draftPoint: point }),
   allWaypoints: () => {
-    const state = get();
-    return [
-      ...buildTrajectoryWaypoints(state.trajectoryPoints, state.trajectorySegments, state.spacing),
-      ...state.elements.flatMap((element) => {
-      if (element.type === 'line' || element.type === 'arc') {
-        return element.waypoints;
-      }
-      return [];
-      }),
-    ];
+    const trajectory = get().computedTrajectory;
+    return trajectory && !trajectory.is_stale ? trajectory.waypoints : [];
   },
 }));
+
+function staleComputedState(state: StudioState): Partial<StudioState> {
+  if (!state.computedTrajectory) return {};
+  return {
+    computedTrajectory: {
+      ...state.computedTrajectory,
+      is_stale: true,
+    },
+    elements: markActionNodes(state.elements, 'stale'),
+    statusMessage: 'Trajectory out of date. Click Compute Smooth Trajectory to update.',
+  };
+}
+
+function markActionNodes(elements: DrawingElement[], status: ActionNode['attachment_status']): DrawingElement[] {
+  return elements.map((element) =>
+    element.type === 'action'
+      ? {
+          ...element,
+          attachment_status: status,
+        }
+      : element,
+  );
+}
+
+function reattachActionNodes(elements: DrawingElement[], trajectory: ComputedTrajectory): DrawingElement[] {
+  return elements.map((element) => {
+    if (element.type !== 'action') return element;
+    const attachment = pointAtArcLength(trajectory.waypoints, element.arc_length_s_m);
+    if (!attachment) {
+      return { ...element, trajectory_id: trajectory.id, attachment_status: 'invalid' };
+    }
+    return {
+      ...element,
+      position: attachment.position,
+      yaw: attachment.yaw,
+      trajectory_id: trajectory.id,
+      waypoint_index: attachment.waypointIndex,
+      source_waypoint_id: trajectory.waypoints[attachment.waypointIndex]?.id,
+      attachment_status: 'attached',
+    };
+  });
+}
+
+function withAdditionalWarnings(report: ValidationReport, warnings: ValidationReport['warnings']): ValidationReport {
+  const mergedWarnings = [...warnings, ...report.warnings];
+  return {
+    ...report,
+    status: report.errors.length > 0 ? 'invalid' : mergedWarnings.length > 0 ? 'valid_with_warnings' : 'valid',
+    warnings: mergedWarnings,
+  };
+}
 
 function clampZoom(zoom: number): number {
   if (!Number.isFinite(zoom)) return 1;
   return Math.min(8, Math.max(0.25, zoom));
+}
+
+function clampSpacing(spacing: number, robotProfile: RobotProfile): number {
+  if (!Number.isFinite(spacing)) return robotProfile.path_constraints.default_spacing;
+  return Math.min(robotProfile.path_constraints.max_spacing, Math.max(robotProfile.path_constraints.min_spacing, spacing));
 }
 
 export function buildTrajectoryWaypoints(
@@ -193,4 +411,85 @@ function removePointSegments(segments: TrajectorySegment[], pointIndex: number):
   if (pointIndex <= 0) return segments.slice(1);
   if (pointIndex >= segments.length) return segments.slice(0, -1);
   return segments.filter((_, segmentIndex) => segmentIndex !== pointIndex);
+}
+
+function snapPointToTrajectory(
+  point: WorldPoint,
+  waypoints: Waypoint[],
+  maxSnapDistance: number,
+): { position: WorldPoint; yaw: number; arcLength: number; waypointIndex: number } | null {
+  let best:
+    | { position: WorldPoint; yaw: number; arcLength: number; waypointIndex: number; distance: number }
+    | null = null;
+  let accumulated = 0;
+
+  for (let index = 0; index < waypoints.length - 1; index += 1) {
+    const start = waypoints[index];
+    const end = waypoints[index + 1];
+    const segmentLength = distance(start, end);
+    if (segmentLength <= 1e-9) continue;
+    const t = projectPointToSegment(point, start, end);
+    const position = {
+      x: start.x + (end.x - start.x) * t,
+      y: start.y + (end.y - start.y) * t,
+    };
+    const snapDistance = distance(point, position);
+    if (!best || snapDistance < best.distance) {
+      best = {
+        position,
+        yaw: Math.atan2(end.y - start.y, end.x - start.x),
+        arcLength: accumulated + segmentLength * t,
+        waypointIndex: t > 0.5 ? index + 1 : index,
+        distance: snapDistance,
+      };
+    }
+    accumulated += segmentLength;
+  }
+
+  if (!best || best.distance > maxSnapDistance) return null;
+  return best;
+}
+
+function pointAtArcLength(
+  waypoints: Waypoint[],
+  arcLength: number,
+): { position: WorldPoint; yaw: number; waypointIndex: number } | null {
+  if (waypoints.length < 2 || arcLength < 0) return null;
+  let accumulated = 0;
+  for (let index = 0; index < waypoints.length - 1; index += 1) {
+    const start = waypoints[index];
+    const end = waypoints[index + 1];
+    const segmentLength = distance(start, end);
+    if (segmentLength <= 1e-9) continue;
+    if (accumulated + segmentLength >= arcLength) {
+      const t = (arcLength - accumulated) / segmentLength;
+      return {
+        position: {
+          x: start.x + (end.x - start.x) * t,
+          y: start.y + (end.y - start.y) * t,
+        },
+        yaw: Math.atan2(end.y - start.y, end.x - start.x),
+        waypointIndex: t > 0.5 ? index + 1 : index,
+      };
+    }
+    accumulated += segmentLength;
+  }
+  const last = waypoints[waypoints.length - 1];
+  if (Math.abs(arcLength - accumulated) < 1e-6) {
+    return { position: last, yaw: last.yaw, waypointIndex: waypoints.length - 1 };
+  }
+  return null;
+}
+
+function projectPointToSegment(point: WorldPoint, start: WorldPoint, end: WorldPoint): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared <= 1e-12) return 0;
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  return Math.min(1, Math.max(0, t));
+}
+
+function createId(prefix: string): string {
+  return `${prefix}_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 }

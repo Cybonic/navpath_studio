@@ -18,13 +18,17 @@ later Nav2 integration.
 - Map stays centered by default, including while zooming.
 - Zoom and pan the map canvas with buttons, wheel zoom, and mouse dragging.
 - Draw sequential path points where each new point connects from the previous
-  point.
+  point as a rough control polygon.
 - Edit existing trajectory points in a numeric point table.
 - Draw sequential arc segments from the last trajectory point to the next point.
 - Edit arc radius and clockwise direction in the segment table.
-- Draw action nodes.
-- Generate waypoints at configurable meter spacing.
-- Export `nav_msgs/Path`-compatible JSON and YAML.
+- Compute a separate smooth trajectory from the rough control points.
+- Mark computed trajectories stale after control-point or smoothing edits.
+- Snap action nodes onto the current computed trajectory.
+- Generate computed waypoints at configurable meter spacing.
+- Validate waypoint count, spacing, duplicate points, yaw jumps, and map extent.
+- Export the latest computed trajectory as `nav_msgs/Path`-compatible JSON and
+  YAML.
 - Run the full app from one Docker container.
 
 ## Run With Docker
@@ -81,8 +85,9 @@ occupied_thresh: 0.75
 free_thresh: 0.15
 ```
 
-After loading it in the UI, draw a line or arc and confirm the exported path
-uses `frame_id: map` and meter coordinates.
+After loading it in the UI, draw a rough path, click **Compute Smooth
+Trajectory**, and confirm the exported path uses `frame_id: map` and meter
+coordinates.
 
 ## Backend Development
 
@@ -123,6 +128,9 @@ successfully is not automatically safe for a real robot. Production use still
 requires localization, costmaps, footprint/inflation validation, controller
 tracking, and recovery behavior.
 
+A path that exports as nav_msgs/Path is ROS-compatible, but not necessarily
+collision-free, dynamically feasible, or safe for execution on a real robot.
+
 ## Known Limitations
 
 - Arc tool creates a simple half-arc from center and edge click.
@@ -130,3 +138,4 @@ tracking, and recovery behavior.
 - No undo/redo.
 - No direct Nav2 action client integration.
 - No real collision checking against occupied cells yet.
+- Corner smoothing is geometric only and does not prove controller feasibility.

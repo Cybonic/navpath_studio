@@ -64,7 +64,11 @@ export function generateArcThroughEndpointsWaypoints(
     return [{ ...start, yaw: 0 }];
   }
 
-  const safeRadius = Math.max(radius, chord / 2);
+  if (radius + EPSILON < chord / 2) {
+    throw new RangeError('Arc radius is too small to connect the selected endpoints.');
+  }
+
+  const safeRadius = radius;
   const midpoint = {
     x: (start.x + end.x) / 2,
     y: (start.y + end.y) / 2,
