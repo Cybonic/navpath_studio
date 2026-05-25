@@ -183,6 +183,7 @@ Must-have features:
 16. Include a minimal robot profile abstraction.
 17. Include or prepare for a native project export format that preserves data not representable in `nav_msgs/Path`.
 18. Provide a **Clear All Content** action that removes all user-created navigation content, including rough control points, computed trajectories, generated waypoints, action nodes, validation state, and export previews, while keeping the loaded map and robot profile available unless the user explicitly resets the whole project.
+19. When obstacle avoidance is enabled in the smoothing settings, compute a path that avoids occupied cells in the loaded occupancy grid. The avoidance strategy is **integrated into the selected smoothing method**, not applied as a uniform post-processing step. Each smoother uses the occupancy grid to guide how it deforms the path away from obstacles. The endpoint waypoints are always preserved. If the smoother cannot find a free path within the configured maximum perturbation distance, the computation reports an error and the intersecting segments are highlighted in the validation panel.
 
 ---
 
@@ -906,6 +907,8 @@ rough control polyline
   ↓
 constraint-aware smoothing / corner rounding
   ↓
+obstacle-aware path deformation (if enabled — method-dependent)  ← new step
+  ↓
 world-meter resampling
   ↓
 yaw generation
@@ -1002,6 +1005,10 @@ smoothing_settings:
   min_turning_radius: 0.8
   max_yaw_jump_deg: 30
   max_deviation_from_control_polyline_m: 0.5
+  obstacle_avoidance_enabled: false
+  obstacle_avoidance_clearance_m: 0.2
+  obstacle_avoidance_max_perturbation_m: 1.0
+  obstacle_avoidance_max_iterations: 50
 ```
 
 The settings may be presented in a simple sidebar form in the PoC.
@@ -1012,6 +1019,10 @@ Smoothing settings should be method-aware. For example:
 - `smoothing_strength` applies to Chaikin/filtering methods.
 - `interpolation_resolution_m` applies to spline or interpolation-based methods before final resampling.
 - `max_deviation_from_control_polyline_m` is used as a warning threshold for methods that may overshoot.
+- `obstacle_avoidance_enabled` activates the method-specific obstacle deformation step. The deformation behaviour differs per method (see §13.9).
+- `obstacle_avoidance_clearance_m` is the minimum acceptable distance between any waypoint and the nearest occupied cell centre. Must be ≥ 0.
+- `obstacle_avoidance_max_perturbation_m` caps how far any waypoint may be displaced from its pre-deformation position. Limits deviation from the user's intended corridor.
+- `obstacle_avoidance_max_iterations` controls the elastic-band iteration budget for methods that use iterative deformation.
 
 ### 13.5 Smoother Input and Output
 
@@ -1020,7 +1031,8 @@ Input:
 - ordered control points in world coordinates,
 - robot profile constraints,
 - smoothing settings,
-- optional trajectory-attached action-node metadata.
+- optional trajectory-attached action-node metadata,
+- occupancy grid (required when `obstacle_avoidance_enabled` is true; ignored otherwise).
 
 Output:
 
@@ -1072,19 +1084,67 @@ If corner rounding is not implemented fully in the first PoC, the fallback smoot
 - validation reports any excessive deviation or yaw discontinuity,
 - the README documents the limitations of the fallback method.
 
-### 13.9 What the Smoother Does Not Guarantee
+### 13.9 Obstacle-Aware Path Computation
+
+When `obstacle_avoidance_enabled` is true and a parsed occupancy grid is available, the smoother must deform the path to avoid occupied cells before the final resampling step. The deformation strategy depends on the selected smoothing method.
+
+#### Common rules for all methods
+
+- The first and last waypoints are never moved (endpoint preservation).
+- A waypoint is considered in violation if its world position maps to an occupied cell (occupancy ≥ `occupied_thresh`) or if it is within `obstacle_avoidance_clearance_m` of any occupied cell centre.
+- A waypoint may not be displaced more than `obstacle_avoidance_max_perturbation_m` from its pre-deformation position.
+- Displacement is perpendicular to the local path tangent at each waypoint, biased toward the direction of lower occupancy.
+- If a waypoint cannot be moved to a free position within the perturbation budget, the computation records a `repair_failed` error for that waypoint and continues to the next. The validation report classifies the trajectory as `invalid` if any `repair_failed` errors remain.
+- After deformation, the path is resampled at the configured `waypoint_spacing` and yaw is regenerated from the deformed geometry.
+- Validation always runs on the post-deformation, post-resampling output.
+
+#### Method-specific deformation behaviour
+
+| Method | Deformation approach |
+|---|---|
+| `none` | Elastic-band relaxation: iterate, pushing each violated waypoint away from the nearest occupied cell along the perpendicular direction until no violations remain or the iteration budget is exhausted. |
+| `corner_rounding` | Increase the corner arc radius for corners whose arc passes through an occupied cell, up to the perturbation budget. If a larger radius cannot clear the obstacle, fall back to elastic-band relaxation on the arc sample points. |
+| `chaikin` | Apply elastic-band relaxation after the Chaikin subdivision. Each violated interior point is pushed outward; endpoints are locked. |
+| `catmull_rom` | After interpolation, apply elastic-band relaxation on the densely sampled curve points before final resampling. |
+| `cubic_spline` | After spline evaluation, apply elastic-band relaxation. The spline control points are not re-fitted; only the evaluated curve points are displaced. |
+| `bezier` | After Bézier evaluation, apply elastic-band relaxation on the evaluated curve points. |
+| `savitzky_golay` | After filtering, apply elastic-band relaxation. |
+
+The elastic-band relaxation used as a fallback or primary step for methods without native obstacle awareness is:
+
+```text
+for iteration in 1 .. max_iterations:
+    for each interior waypoint w_i (excluding endpoints):
+        if w_i violates clearance constraint:
+            direction = unit vector from nearest obstacle centre to w_i
+            step = min(clearance_needed, max_perturbation - already_displaced)
+            w_i = w_i + direction * step
+    if no violations remain: break
+```
+
+#### UI requirements for obstacle avoidance
+
+- The smoothing settings panel must expose the `obstacle_avoidance_enabled` toggle.
+- The toggle is disabled (greyed out) when no occupancy grid is loaded.
+- The settings panel must show `obstacle_avoidance_clearance_m` and `obstacle_avoidance_max_perturbation_m` only when the toggle is on.
+- After computation, the validation panel must report:
+  - how many waypoints were displaced by obstacle avoidance,
+  - the maximum displacement applied,
+  - any `repair_failed` waypoints with their indices.
+- Displaced waypoints should be visually distinct on the map canvas (e.g., a different colour or marker) so users can see where the path was modified.
+
+### 13.10 What the Smoother Does Not Guarantee
 
 The smoother does not guarantee:
 
-- collision-free paths,
+- robot footprint clearance (only centreline obstacle avoidance is implemented),
 - dynamic feasibility,
-- footprint clearance,
-- successful Nav2 controller tracking,
-- safety around people or dynamic obstacles.
+- safety around people or dynamic obstacles,
+- successful Nav2 controller tracking.
 
-It only improves the geometric continuity of the path according to the configured constraints.
+Even with `obstacle_avoidance_enabled`, the smoother only checks that each waypoint's world position is free. It does not inflate the robot footprint or check clearance along the footprint boundary. Full footprint collision checking remains a future extension (see §15.1).
 
-> **Validation must run on the post-smoothed, resampled output.** Smoothing can introduce curvature spikes, self-intersections, or map-boundary violations that were not present in the rough control polygon. Running the validator only on the input control points is insufficient. The validation pipeline must always receive the final resampled waypoints, not the pre-smoothing polyline.
+> **Validation must run on the post-deformation, post-resampling output.** Smoothing and obstacle deformation can introduce curvature spikes, self-intersections, or map-boundary violations that were not present in the rough control polygon. The validation pipeline must always receive the final resampled waypoints.
 
 ## 14. Basic Path Validation Requirements
 
@@ -1142,18 +1202,23 @@ Metric surfacing priority:
 | `duplicate_waypoints` | zero-length or duplicate segments | warning |
 | `self_intersection` | path crosses itself | warning |
 | `outside_map` | any waypoint outside map extent | warning |
+| `occupied_cell_intersection` | waypoint on occupied cell, avoidance disabled | error |
+| `occupied_cell_intersection` | waypoint on occupied cell, avoidance enabled but repair failed | error |
+| `obstacle_avoidance_applied` | avoidance displaced ≥ 1 waypoint and all are now free | info |
 
 ---
 
 ## 15. Occupancy Awareness Contract
 
-Collision checking is out of scope for the first PoC, but the architecture must not block it later.
+Centreline obstacle detection and basic path repair are implemented when `obstacle_avoidance_enabled` is true (see §13.9). Full footprint collision checking remains a future extension.
 
 For the PoC:
 
 - Display occupied, free, and unknown regions distinctly enough for visual inspection.
-- Keep parsed occupancy metadata available to frontend tools.
-- Add an extension point for future static-map collision checking against generated waypoints.
+- Keep parsed occupancy metadata available to frontend tools and the smoother.
+- When `obstacle_avoidance_enabled` is true, pass the full occupancy grid to the smoother so it can deform the path away from occupied cells.
+- Highlight waypoints that were displaced by obstacle avoidance on the map canvas.
+- Report obstacle avoidance outcomes (displaced count, max displacement, repair failures) in the validation panel.
 - Do not claim a path is Nav2-safe just because it exports as `nav_msgs/Path`.
 
 The PoC may produce a `nav_msgs/Path`-compatible artifact, but this only means the exported structure is ROS-compatible.
@@ -1178,15 +1243,15 @@ from:
 validated executable robot trajectory
 ```
 
-### 15.1 Architecture Extension Point for Obstacle-Aware Validation
+### 15.1 Architecture Extension Point for Footprint-Aware Validation
 
-To support future static-map obstacle checking without restructuring the data model, the architecture must preserve the following at validation time:
+The centreline obstacle avoidance in §13.9 only checks whether each waypoint's position is free. Full footprint collision checking requires inflating the robot shape at each pose. To support this extension without restructuring the data model, the architecture must preserve at validation time:
 
 - The full parsed occupancy grid (pixel values, resolution, origin, and thresholds), not only the display image.
 - The robot footprint from the robot profile (circle radius or polygon vertices).
 - All generated waypoints in world coordinates with their associated yaw.
 
-When implemented, an obstacle-aware validator would:
+When implemented, a footprint-aware validator would:
 
 1. For each waypoint pose, inflate the robot footprint by a configured safety margin.
 2. Transform the inflated footprint polygon into image pixel coordinates.
@@ -1195,7 +1260,7 @@ When implemented, an obstacle-aware validator would:
 5. Warn if clearance falls below a configured minimum clearance margin.
 6. Report an error if the footprint directly intersects an occupied cell.
 
-The PoC backend already converts pixel ↔ world coordinates and parses occupancy thresholds, so the data is available. Adding the validator later requires only implementing steps 1–6 without changing the data model.
+The occupancy grid, coordinate transform, and waypoints are already available. Adding the footprint validator later requires only implementing steps 1–6 without changing the data model.
 
 ---
 
@@ -1560,7 +1625,7 @@ Keep these out of the initial implementation:
 
 - Robot connection or live `cmd_vel`
 - Direct Nav2 action client integration
-- Real collision checking
+- Full robot footprint collision checking (centreline avoidance is in scope; footprint inflation is not)
 - Dynamic obstacle handling
 - AMCL/localization UI
 - Lifecycle control
@@ -1576,7 +1641,7 @@ Keep these out of the initial implementation:
 - Velocity profiling and time parameterization (converting the geometric path into a trajectory with `v(t)`, `ω(t)`, `a(t)`)
 - Curvature-speed coupling (automatic speed reduction in high-curvature sections)
 - Dynamic feasibility analysis (checking whether the robot can physically follow the path at any given speed)
-- Clearance-based validation (checking distance to obstacles along the footprint)
+- Clearance-based validation along the robot footprint boundary (centreline clearance is partially covered by `obstacle_avoidance_clearance_m`)
 
 Do not remove extension points for these features.
 
@@ -1702,6 +1767,7 @@ APP/
   line_generator
   arc_generator
   path_smoother
+  obstacle_deformer          ← elastic-band obstacle avoidance, called by each smoother
   waypoint_resampler
   heading_generator
   quaternion_converter
@@ -1780,6 +1846,9 @@ The frontend must:
 - Show waypoint yaw and quaternion data in the waypoint table/properties sidebar.
 - Show selected element metadata in the sidebar.
 - Show validation status and validation metrics.
+- Expose an obstacle avoidance toggle and its settings (`clearance_m`, `max_perturbation_m`) in the smoothing panel; disable the toggle when no occupancy grid is loaded.
+- Display displaced waypoints visually on the map canvas with a distinct colour or marker after a computation that applied obstacle avoidance.
+- Show obstacle avoidance outcome in the validation panel: waypoints displaced, maximum displacement, and any repair failures.
 - Export JSON/YAML from world-frame waypoints.
 - Provide an **Export Nav2 Files** action that produces `path.nav2.yaml`, optional sparse pose-goal YAML, native project YAML, and a README in a downloadable package.
 - Keep pan/zoom state separate from world geometry.
@@ -1892,6 +1961,23 @@ Add unit tests for:
 - invalid arc detection
 - path outside known map extent
 - fewer than two poses warning/error
+- `occupied_cell_intersection` error is reported when a waypoint falls on an occupied cell and avoidance is disabled
+- `obstacle_avoidance_applied` info is reported when avoidance displaces at least one waypoint and all violations are cleared
+- `repair_failed` error is reported when a waypoint cannot be cleared within `max_perturbation_m`
+
+### 27.7 Obstacle Avoidance Tests
+
+Add unit tests for:
+
+- with avoidance disabled, a path through an occupied cell produces an `occupied_cell_intersection` error and is not modified
+- with avoidance enabled, a path through an occupied cell is deformed so the final waypoints avoid the occupied cell
+- the first and last waypoints are never displaced by obstacle avoidance regardless of method
+- no waypoint is displaced more than `obstacle_avoidance_max_perturbation_m` from its pre-deformation position
+- corner rounding with avoidance enabled increases the arc radius when the initial arc intersects an obstacle
+- Chaikin with avoidance enabled applies elastic-band relaxation after subdivision
+- elastic-band relaxation converges within `max_iterations` for a single-obstacle, single-waypoint violation
+- when a waypoint cannot be cleared, a `repair_failed` error is produced and the trajectory is classified as `invalid`
+- the validation report always runs on the post-deformation, post-resampling waypoints
 
 ---
 
@@ -1946,6 +2032,12 @@ The PoC is acceptable when:
 42. The exported `nav_msgs/Path` uses the latest computed trajectory, not the rough control polygon.
 43. The app provides a **Clear All Content** action that removes all rough control points, computed trajectories, generated waypoints, action nodes, validation state, and export previews while preserving the loaded map and selected robot profile.
 44. After **Clear All Content**, export controls are disabled until the user defines new control points and recomputes a smooth trajectory.
+45. When obstacle avoidance is disabled and the computed path intersects an occupied cell, the validation panel reports an `occupied_cell_intersection` error and the trajectory is classified as `invalid`.
+46. When obstacle avoidance is enabled and the computed path initially intersects an occupied cell, the smoother deforms the path away from the obstacle using the method-specific strategy defined in §13.9; the resulting waypoints avoid the occupied cell.
+47. Displaced waypoints are visually distinct on the map canvas after an obstacle-avoidance computation.
+48. When avoidance cannot clear all violations within the perturbation budget, the validation panel reports `repair_failed` errors with the affected waypoint indices and the trajectory is classified as `invalid`.
+49. The obstacle avoidance toggle is disabled when no occupancy grid is loaded.
+50. The endpoint waypoints are never displaced by obstacle avoidance.
 
 ---
 

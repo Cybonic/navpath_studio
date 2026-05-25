@@ -46,6 +46,7 @@ export interface Waypoint extends WorldPoint {
   yaw_deg?: number;
   orientation_quaternion?: Quaternion;
   source_primitive_id?: string;
+  obstacle_displaced?: boolean;
 }
 
 export type ToolMode = 'select' | 'pan' | 'line' | 'arc' | 'action';
@@ -124,6 +125,10 @@ export interface SmoothingSettings {
   min_turning_radius?: number;
   max_yaw_jump_deg: number;
   max_deviation_from_control_polyline_m?: number;
+  obstacle_avoidance_enabled: boolean;
+  obstacle_avoidance_clearance_m: number;
+  obstacle_avoidance_max_perturbation_m: number;
+  obstacle_avoidance_max_iterations: number;
 }
 
 export interface OrientationDisplaySettings {
@@ -141,6 +146,7 @@ export interface ComputedTrajectory {
   waypoints: Waypoint[];
   is_stale: boolean;
   validation?: ValidationReport;
+  displaced_waypoint_count?: number;
 }
 
 export interface ValidationIssue {

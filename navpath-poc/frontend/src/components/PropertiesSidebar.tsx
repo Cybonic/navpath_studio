@@ -10,6 +10,7 @@ export function PropertiesSidebar() {
   const orientationDisplay = useStudioStore((state) => state.orientationDisplay);
   const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
   const robotProfile = useStudioStore((state) => state.robotProfile);
+  const occupancyGrid = useStudioStore((state) => state.occupancyGrid);
   const statusMessage = useStudioStore((state) => state.statusMessage);
   const selectedId = useStudioStore((state) => state.selectedId);
   const selectedWaypointIndex = useStudioStore((state) => state.selectedWaypointIndex);
@@ -253,6 +254,52 @@ export function PropertiesSidebar() {
             onChange={(event) => setSmoothingSettings({ interpolation_resolution_m: Number(event.target.value) })}
           />
         </label>
+        <div className="sectionHeader" style={{ marginTop: '0.5rem' }}>
+          <h4>Obstacle Avoidance</h4>
+        </div>
+        <label className="checkboxLabel" title={!occupancyGrid ? 'Load a map with an occupancy grid to enable obstacle avoidance' : ''}>
+          <input
+            checked={smoothingSettings.obstacle_avoidance_enabled}
+            disabled={!occupancyGrid}
+            type="checkbox"
+            onChange={(event) => setSmoothingSettings({ obstacle_avoidance_enabled: event.target.checked })}
+          />
+          Enabled{!occupancyGrid ? ' (requires map)' : ''}
+        </label>
+        {smoothingSettings.obstacle_avoidance_enabled && occupancyGrid && (
+          <>
+            <label>
+              Clearance m
+              <input
+                min="0"
+                step="0.05"
+                type="number"
+                value={roundForInput(smoothingSettings.obstacle_avoidance_clearance_m)}
+                onChange={(event) => setSmoothingSettings({ obstacle_avoidance_clearance_m: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              Max perturbation m
+              <input
+                min="0.01"
+                step="0.1"
+                type="number"
+                value={roundForInput(smoothingSettings.obstacle_avoidance_max_perturbation_m)}
+                onChange={(event) => setSmoothingSettings({ obstacle_avoidance_max_perturbation_m: Number(event.target.value) })}
+              />
+            </label>
+            <label>
+              Max iterations
+              <input
+                min="1"
+                step="1"
+                type="number"
+                value={smoothingSettings.obstacle_avoidance_max_iterations}
+                onChange={(event) => setSmoothingSettings({ obstacle_avoidance_max_iterations: Number(event.target.value) })}
+              />
+            </label>
+          </>
+        )}
         <button
           disabled={trajectoryPoints.length < 2}
           onClick={computeSmoothTrajectory}
@@ -289,13 +336,22 @@ export function PropertiesSidebar() {
                 <p>Max yaw jump: {computedTrajectory.validation.metrics.max_yaw_jump_deg.toFixed(1)} deg</p>
                 <p>Max curvature: {computedTrajectory.validation.metrics.max_curvature.toFixed(3)} 1/m</p>
                 <p>Zero-length segments: {computedTrajectory.validation.metrics.zero_length_segment_count}</p>
+                {computedTrajectory.displaced_waypoint_count !== undefined &&
+                  computedTrajectory.displaced_waypoint_count > 0 && (
+                    <p className="validationInfo">
+                      Obstacle avoidance displaced {computedTrajectory.displaced_waypoint_count} waypoint(s).
+                    </p>
+                  )}
                 {computedTrajectory.validation.errors.map((issue) => (
                   <p className="validationError" key={`${issue.type}-${issue.message}`}>
                     {issue.message}
                   </p>
                 ))}
                 {computedTrajectory.validation.warnings.map((issue) => (
-                  <p className="validationWarning" key={`${issue.type}-${issue.message}`}>
+                  <p
+                    className={issue.severity === 'info' ? 'validationInfo' : 'validationWarning'}
+                    key={`${issue.type}-${issue.message}`}
+                  >
                     {issue.message}
                   </p>
                 ))}

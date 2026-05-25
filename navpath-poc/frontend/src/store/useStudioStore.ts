@@ -120,6 +120,10 @@ const defaultSmoothingSettings: SmoothingSettings = {
   min_turning_radius: defaultRobotProfile.motion_limits.min_turning_radius,
   max_yaw_jump_deg: defaultRobotProfile.path_constraints.max_yaw_jump_deg,
   max_deviation_from_control_polyline_m: 0.5,
+  obstacle_avoidance_enabled: false,
+  obstacle_avoidance_clearance_m: 0.2,
+  obstacle_avoidance_max_perturbation_m: 1.0,
+  obstacle_avoidance_max_iterations: 50,
 };
 
 const defaultOrientationDisplay: OrientationDisplaySettings = {
@@ -216,6 +220,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       nextSettings.corner_radius = Math.max(0.01, nextSettings.corner_radius);
       nextSettings.smoothing_strength = clampUnit(nextSettings.smoothing_strength);
       nextSettings.interpolation_resolution_m = Math.max(0.01, nextSettings.interpolation_resolution_m);
+      nextSettings.obstacle_avoidance_clearance_m = Math.max(0, nextSettings.obstacle_avoidance_clearance_m);
+      nextSettings.obstacle_avoidance_max_perturbation_m = Math.max(0.01, nextSettings.obstacle_avoidance_max_perturbation_m);
+      nextSettings.obstacle_avoidance_max_iterations = Math.max(1, Math.round(nextSettings.obstacle_avoidance_max_iterations));
       return {
         smoothingSettings: nextSettings,
         spacing: nextSettings.waypoint_spacing,
@@ -252,6 +259,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         waypoints: smoothResult.waypoints,
         is_stale: false,
         validation,
+        displaced_waypoint_count: smoothResult.displaced_count,
       };
 
       return {
@@ -496,10 +504,16 @@ export function buildTrajectoryWaypoints(
 function computeTrajectoryFromCurrentIntent(state: StudioState): {
   waypoints: Waypoint[];
   warnings: ValidationReport['warnings'];
+  displaced_count: number;
 } {
   const hasExplicitArc = state.trajectorySegments.some((segment) => segment.type === 'arc');
   if (!hasExplicitArc) {
-    return computeSmoothWaypoints(state.trajectoryPoints, state.smoothingSettings);
+    return computeSmoothWaypoints(
+      state.trajectoryPoints,
+      state.smoothingSettings,
+      state.occupancyGrid,
+      state.map,
+    );
   }
 
   const warnings: ValidationReport['warnings'] = [];
@@ -519,6 +533,7 @@ function computeTrajectoryFromCurrentIntent(state: StudioState): {
         state.smoothingSettings.waypoint_spacing,
       ),
       warnings,
+      displaced_count: 0,
     };
   } catch (error) {
     warnings.push({
@@ -526,7 +541,7 @@ function computeTrajectoryFromCurrentIntent(state: StudioState): {
       severity: 'error',
       message: error instanceof Error ? error.message : 'Arc segment could not be generated.',
     });
-    return { waypoints: [], warnings };
+    return { waypoints: [], warnings, displaced_count: 0 };
   }
 }
 

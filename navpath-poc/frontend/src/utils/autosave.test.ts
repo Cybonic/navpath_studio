@@ -32,6 +32,10 @@ describe('autosave storage helpers', () => {
         min_turning_radius: 0.8,
         max_yaw_jump_deg: 30,
         max_deviation_from_control_polyline_m: 0.5,
+        obstacle_avoidance_enabled: false,
+        obstacle_avoidance_clearance_m: 0.2,
+        obstacle_avoidance_max_perturbation_m: 1.0,
+        obstacle_avoidance_max_iterations: 50,
       },
       robotProfile: {
         name: 'generic_2d_ground_robot',

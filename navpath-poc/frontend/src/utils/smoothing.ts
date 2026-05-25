@@ -1,5 +1,5 @@
-import type { ControlPoint, SmoothingSettings, ValidationIssue, Waypoint, WorldPoint } from '../types';
-import { distance } from './coordinates';
+import type { ControlPoint, MapMetadata, OccupancyGrid, SmoothingSettings, ValidationIssue, Waypoint, WorldPoint } from '../types';
+import { distance, pixelToWorld, worldToPixel } from './coordinates';
 import { normalizeAngle, waypointWithOrientation } from './headingGeneration';
 
 const EPSILON = 1e-6;
@@ -7,30 +7,56 @@ const EPSILON = 1e-6;
 export interface SmoothResult {
   waypoints: Waypoint[];
   warnings: ValidationIssue[];
+  displaced_count: number;
 }
 
-export function computeSmoothWaypoints(controlPoints: ControlPoint[], settings: SmoothingSettings): SmoothResult {
+export function computeSmoothWaypoints(
+  controlPoints: ControlPoint[],
+  settings: SmoothingSettings,
+  occupancyGrid?: OccupancyGrid | null,
+  map?: MapMetadata | null,
+): SmoothResult {
   const warnings: ValidationIssue[] = [];
   const spacing = clampSpacing(settings.waypoint_spacing);
 
   if (controlPoints.length === 0) {
-    return { waypoints: [], warnings };
+    return { waypoints: [], warnings, displaced_count: 0 };
   }
 
   if (controlPoints.length === 1) {
     return {
       waypoints: [{ id: createId('wp'), x: controlPoints[0].x, y: controlPoints[0].y, yaw: 0 }],
       warnings,
+      displaced_count: 0,
     };
   }
 
   const roughPolyline = removeDuplicatePoints(controlPoints);
   const smoothedPolyline = buildSmoothedPolyline(roughPolyline, settings, spacing, warnings);
 
-  return {
-    waypoints: resamplePolyline(smoothedPolyline, spacing, 'computed_path'),
-    warnings,
-  };
+  let finalPolyline = smoothedPolyline;
+  let displacedIndices = new Set<number>();
+
+  if (settings.obstacle_avoidance_enabled && occupancyGrid && map) {
+    const deformed = applyElasticBand(smoothedPolyline, settings, occupancyGrid, map, warnings);
+    finalPolyline = deformed.points;
+    displacedIndices = deformed.displacedIndices;
+
+    const repairFailed = warnings.some((w) => w.type === 'repair_failed');
+    if (displacedIndices.size > 0 && !repairFailed) {
+      warnings.push({
+        type: 'obstacle_avoidance_applied',
+        severity: 'info',
+        message: `Obstacle avoidance displaced ${displacedIndices.size} polyline point(s) to clear occupied cell intersections.`,
+      });
+    }
+  }
+
+  const segmentFlags = buildSegmentFlags(finalPolyline.length, displacedIndices);
+  const waypoints = resamplePolyline(finalPolyline, spacing, 'computed_path', segmentFlags);
+  const displaced_count = waypoints.filter((w) => w.obstacle_displaced).length;
+
+  return { waypoints, warnings, displaced_count };
 }
 
 function buildSmoothedPolyline(
@@ -63,7 +89,12 @@ function buildSmoothedPolyline(
   }
 }
 
-export function resamplePolyline(points: WorldPoint[], spacing: number, sourcePrimitiveId?: string): Waypoint[] {
+export function resamplePolyline(
+  points: WorldPoint[],
+  spacing: number,
+  sourcePrimitiveId?: string,
+  segmentFlags?: boolean[],
+): Waypoint[] {
   const cleaned = removeDuplicatePoints(points);
   if (cleaned.length === 0) return [];
   if (cleaned.length === 1) {
@@ -119,12 +150,17 @@ export function resamplePolyline(points: WorldPoint[], spacing: number, sourcePr
     const x = segment.start.x + (segment.end.x - segment.start.x) * segmentT;
     const y = segment.start.y + (segment.end.y - segment.start.y) * segmentT;
     const yaw = Math.atan2(segment.end.y - segment.start.y, segment.end.x - segment.start.x);
-    return waypointWithOrientation({
+    const wp = waypointWithOrientation({
       id: createId('wp'),
       point: { x, y },
       yaw,
       sourcePrimitiveId,
     });
+    const isEndpoint = target <= EPSILON || Math.abs(target - totalLength) <= EPSILON;
+    if (!isEndpoint && segmentFlags?.[segmentIndex]) {
+      wp.obstacle_displaced = true;
+    }
+    return wp;
   });
 }
 
@@ -492,4 +528,118 @@ function clampSpacing(spacing: number): number {
 
 function createId(prefix: string): string {
   return `${prefix}_${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+}
+
+// ─── Obstacle avoidance ───────────────────────────────────────────────────────
+
+function gridCellAt(x: number, y: number, grid: OccupancyGrid): number | null {
+  if (x < 0 || y < 0 || x >= grid.width || y >= grid.height) return null;
+  return grid.cells[y * grid.width + x] ?? null;
+}
+
+function buildSegmentFlags(polylineLength: number, displacedIndices: Set<number>): boolean[] | undefined {
+  if (displacedIndices.size === 0) return undefined;
+  return Array.from({ length: polylineLength - 1 }, (_, i) => displacedIndices.has(i) || displacedIndices.has(i + 1));
+}
+
+function applyElasticBand(
+  points: WorldPoint[],
+  settings: SmoothingSettings,
+  grid: OccupancyGrid,
+  map: MapMetadata,
+  warnings: ValidationIssue[],
+): { points: WorldPoint[]; displacedIndices: Set<number> } {
+  const { obstacle_avoidance_clearance_m: clearanceM } = settings;
+  const { obstacle_avoidance_max_perturbation_m: maxPerturbationM } = settings;
+  const { obstacle_avoidance_max_iterations: maxIterations } = settings;
+
+  const clearancePx = Math.max(1, clearanceM / map.resolution);
+  const searchRadius = Math.ceil(clearancePx) + 2;
+  const stepPx = Math.max(0.5, clearancePx * 0.5);
+
+  const mutable = points.map((p) => ({ ...p }));
+  const originals = points.map((p) => ({ ...p }));
+  const displaced = new Set<number>();
+
+  for (let iter = 0; iter < maxIterations; iter += 1) {
+    let anyViolation = false;
+
+    for (let i = 1; i < mutable.length - 1; i += 1) {
+      const pixel = worldToPixel(mutable[i], map);
+      const px = Math.round(pixel.px);
+      const py = Math.round(pixel.py);
+
+      if (gridCellAt(px, py, grid) !== 100) continue;
+      anyViolation = true;
+
+      // Compute repulsion force in pixel space away from occupied neighbours.
+      let fx = 0;
+      let fy = 0;
+      for (let dx = -searchRadius; dx <= searchRadius; dx += 1) {
+        for (let dy = -searchRadius; dy <= searchRadius; dy += 1) {
+          if (dx === 0 && dy === 0) continue;
+          if (gridCellAt(px + dx, py + dy, grid) === 100) {
+            const d2 = dx * dx + dy * dy;
+            fx -= dx / d2;
+            fy -= dy / d2;
+          }
+        }
+      }
+
+      let newPixelX = pixel.px;
+      let newPixelY = pixel.py;
+
+      if (Math.hypot(fx, fy) > EPSILON) {
+        const mag = Math.hypot(fx, fy);
+        newPixelX += (fx / mag) * stepPx;
+        newPixelY += (fy / mag) * stepPx;
+      } else {
+        // Fallback: push perpendicular to local path tangent in pixel space.
+        const prevPixel = worldToPixel(mutable[Math.max(0, i - 1)], map);
+        const nextPixel = worldToPixel(mutable[Math.min(mutable.length - 1, i + 1)], map);
+        const tx = nextPixel.px - prevPixel.px;
+        const ty = nextPixel.py - prevPixel.py;
+        const tmag = Math.hypot(tx, ty);
+        if (tmag > EPSILON) {
+          newPixelX += (-ty / tmag) * stepPx;
+          newPixelY += (tx / tmag) * stepPx;
+        }
+      }
+
+      // Convert new pixel position back to world coordinates.
+      const newWorld = pixelToWorld({ px: newPixelX, py: newPixelY }, map);
+
+      // Clamp total displacement to max perturbation budget.
+      const dxW = newWorld.x - originals[i].x;
+      const dyW = newWorld.y - originals[i].y;
+      const disp = Math.hypot(dxW, dyW);
+      if (disp > maxPerturbationM) {
+        mutable[i].x = originals[i].x + (dxW / disp) * maxPerturbationM;
+        mutable[i].y = originals[i].y + (dyW / disp) * maxPerturbationM;
+      } else {
+        mutable[i].x = newWorld.x;
+        mutable[i].y = newWorld.y;
+      }
+
+      displaced.add(i);
+    }
+
+    if (!anyViolation) break;
+  }
+
+  // Check whether any points are still in violation after all iterations.
+  for (let i = 1; i < mutable.length - 1; i += 1) {
+    const pixel = worldToPixel(mutable[i], map);
+    if (gridCellAt(Math.round(pixel.px), Math.round(pixel.py), grid) === 100) {
+      warnings.push({
+        type: 'repair_failed',
+        severity: 'error',
+        message:
+          'Obstacle avoidance could not clear all path intersections within the perturbation budget. Increase max_perturbation_m or reposition control points.',
+      });
+      break;
+    }
+  }
+
+  return { points: mutable, displacedIndices: displaced };
 }

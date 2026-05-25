@@ -13,6 +13,7 @@ const STALE_TRAJECTORY_COLOR = '#f59e0b';
 const ORIENTATION_ARROW_COLOR = '#d55e00';
 const SELECTED_WAYPOINT_COLOR = '#0072b2';
 const ORIENTATION_HALO_COLOR = '#ffffff';
+const DISPLACED_WAYPOINT_COLOR = '#ea580c';
 
 export function MapCanvas() {
   const map = useStudioStore((state) => state.map);
@@ -293,9 +294,9 @@ function ComputedTrajectoryView({
               x={pixel.px * scale}
               y={pixel.py * scale}
               radius={isSelected ? 5 : 3}
-              fill={isSelected ? SELECTED_WAYPOINT_COLOR : color}
-              stroke="#ffffff"
-              strokeWidth={isSelected ? 1.5 : 0}
+              fill={isSelected ? SELECTED_WAYPOINT_COLOR : waypoint.obstacle_displaced ? DISPLACED_WAYPOINT_COLOR : color}
+              stroke={waypoint.obstacle_displaced && !isSelected ? '#ffffff' : '#ffffff'}
+              strokeWidth={isSelected ? 1.5 : waypoint.obstacle_displaced ? 1 : 0}
             />
             {shouldShowOrientation && (
               <>
