@@ -6,6 +6,8 @@ import type {
   ControlPoint,
   DrawingElement,
   MapMetadata,
+  NavPathExport,
+  NativeProjectExport,
   OccupancyGrid,
   OrientationDisplaySettings,
   RobotProfile,
@@ -74,6 +76,10 @@ interface StudioState {
   removeTrajectoryPoint: (index: number) => void;
   clearTrajectory: () => void;
   clearAllContent: () => void;
+  loadProject: (data: NativeProjectExport) => void;
+  loadNavPath: (data: NavPathExport) => void;
+  mapDirHandle: FileSystemDirectoryHandle | null;
+  setMapDirHandle: (handle: FileSystemDirectoryHandle | null) => void;
   addElement: (element: DrawingElement) => void;
   setSelectedId: (id: string | null) => void;
   setCursorWorld: (point: WorldPoint | null) => void;
@@ -148,6 +154,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   robotProfile: defaultRobotProfile,
   computedTrajectory: null,
   orientationDisplay: defaultOrientationDisplay,
+  mapDirHandle: null,
   elements: [],
   selectedId: null,
   selectedWaypointIndex: null,
@@ -161,6 +168,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       map,
       occupancyGrid,
       imageDataUrl,
+      mapDirHandle: null,
       elements: [],
       trajectoryPoints: [],
       trajectorySegments: [],
@@ -392,6 +400,70 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       selectedWaypointIndex: null,
       draftPoint: null,
       statusMessage: 'Cleared all trajectory content. Loaded map and robot profile were preserved.',
+    }),
+  setMapDirHandle: (handle) => set({ mapDirHandle: handle }),
+  loadProject: (data) =>
+    set((state) => {
+      const project = data.navpath_studio_project;
+      const smoothingSettings: SmoothingSettings = { ...defaultSmoothingSettings, ...project.smoothing_settings };
+      const robotProfile: RobotProfile = { ...defaultRobotProfile, ...project.robot_profile };
+      const currentFrame = state.map?.frame_id;
+      const projectFrame = project.frame_id;
+      const frameMismatch = currentFrame && projectFrame && currentFrame !== projectFrame;
+      return {
+        trajectoryPoints: project.control_points,
+        trajectorySegments: project.primitives,
+        smoothingSettings,
+        spacing: smoothingSettings.waypoint_spacing,
+        robotProfile,
+        computedTrajectory: project.computed_trajectory ?? null,
+        elements: project.action_nodes,
+        orientationDisplay: { ...defaultOrientationDisplay, ...project.orientation_display },
+        selectedId: null,
+        selectedWaypointIndex: null,
+        draftPoint: null,
+        statusMessage: frameMismatch
+          ? `Project loaded (${project.control_points.length} control points). Warning: project frame "${projectFrame}" differs from loaded map frame "${currentFrame}".`
+          : `Project loaded: ${project.control_points.length} control point(s). Click Compute Smooth Trajectory to regenerate.`,
+      };
+    }),
+  loadNavPath: (data) =>
+    set(() => {
+      if (data.poses.length === 0) return { statusMessage: 'Imported path is empty.' };
+      // Subsample dense waypoints at ~1 m stride to create editable control points
+      const STRIDE_M = 1.0;
+      const sparse: Array<{ x: number; y: number }> = [
+        { x: data.poses[0].pose.position.x, y: data.poses[0].pose.position.y },
+      ];
+      let accumulated = 0;
+      for (let i = 1; i < data.poses.length; i++) {
+        const prev = data.poses[i - 1].pose.position;
+        const curr = data.poses[i].pose.position;
+        accumulated += Math.hypot(curr.x - prev.x, curr.y - prev.y);
+        if (accumulated >= STRIDE_M || i === data.poses.length - 1) {
+          sparse.push({ x: curr.x, y: curr.y });
+          accumulated = 0;
+        }
+      }
+      const controlPoints: ControlPoint[] = sparse.map((p) => ({
+        id: createId('cp'),
+        x: p.x,
+        y: p.y,
+      }));
+      const segments: TrajectorySegment[] = controlPoints.slice(1).map(() => ({
+        id: createId('segment'),
+        type: 'line',
+      }));
+      return {
+        trajectoryPoints: controlPoints,
+        trajectorySegments: segments,
+        computedTrajectory: null,
+        elements: [],
+        selectedId: null,
+        selectedWaypointIndex: null,
+        draftPoint: null,
+        statusMessage: `Imported ${data.poses.length} poses → ${controlPoints.length} editable control points (frame: ${data.header.frame_id}). Click Compute Smooth Trajectory to regenerate.`,
+      };
     }),
   addElement: (element) =>
     set((state) => ({

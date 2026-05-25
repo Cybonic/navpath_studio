@@ -4,3 +4,9 @@ services:
       context: .
     ports:
       - "8000:8000"
+    volumes:
+      # Mount your home directory so the backend can browse and save files
+      # on the host. Change ${HOME} to any specific root you prefer.
+      - ${HOME}:/workspace:rw
+    environment:
+      WORKSPACE_ROOT: /workspace

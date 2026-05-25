@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import export, maps
+from app.routers import export, files, maps
 
 
 app = FastAPI(title="NavPath Studio API", version="0.1.0")
@@ -20,6 +20,7 @@ app.add_middleware(
 
 app.include_router(maps.router, prefix="/api/maps", tags=["maps"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
+app.include_router(files.router, prefix="/api/files", tags=["files"])
 
 
 @app.get("/api/health")
