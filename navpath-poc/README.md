@@ -31,11 +31,15 @@ later Nav2 integration.
   strength and interpolation settings stored in project metadata.
 - Toggle waypoint orientation arrows, adjust arrow stride/density, and inspect
   waypoint yaw plus quaternion values.
-- Validate waypoint count, spacing, duplicate points, yaw jumps, and map extent.
+- Validate waypoint count, spacing, duplicate points, yaw jumps, approximate
+  curvature, robot-profile curvature severity, self-intersections, finite
+  orientation data, map extent, and intersections with occupied/unknown
+  occupancy-grid cells.
 - Export the latest computed trajectory as `nav_msgs/Path`-compatible JSON and
   YAML.
 - Export native project JSON that preserves rough control points, smoothing
   settings, robot profile, action nodes, generated waypoints, and validation.
+- Autosave the current browser workspace and restore it after a page reload.
 - Clear all user-created trajectory content without reloading the map.
 - Run the full app from one Docker container.
 
@@ -95,11 +99,18 @@ free_thresh: 0.15
 
 After loading it in the UI, draw a rough path, click **Compute Smooth
 Trajectory**, and confirm the exported path uses `frame_id: map` and meter
-coordinates.
+coordinates. Rough control points are route-shaping inputs only; the
+`nav_msgs/Path` preview is generated from the latest computed trajectory.
 
 Use **Clear All Content** to remove rough points, computed trajectories,
 generated waypoints, action nodes, validation state, and export previews while
 keeping the loaded map and robot profile.
+
+Autosave is enabled by default in the toolbar. It stores the current workspace in
+the browser's local storage, including the loaded map image, occupancy grid,
+control points, computed trajectory, action nodes, smoothing settings, robot
+profile, zoom, and pan. Reloading the app restores that browser-local workspace.
+Disabling autosave clears the stored workspace for that browser.
 
 ## Backend Development
 
@@ -136,7 +147,25 @@ The exported path uses ROS 2 `nav_msgs/Path` semantics:
 - Orientation is a planar yaw quaternion.
 
 The waypoint orientation overlay and waypoint table use the same yaw values that
-are converted into export quaternions.
+are converted into export quaternions. Generated waypoints also carry yaw in
+degrees and a stored planar quaternion in the native project model.
+
+The default corner-rounding smoother replaces sharp interior line corners with
+sampled circular arcs where the requested radius fits the adjacent segments. If
+the requested radius is too small relative to the robot profile minimum turning
+radius, the app warns and clamps the radius used for smoothing. If it is too
+large for a local corner, the app reduces it and reports a warning.
+
+Validation runs on the post-smoothed, resampled waypoint output. Curvature is
+approximated from yaw change over segment length. For Ackermann/car-like robots,
+or any profile that cannot rotate in place, curvature above
+`1 / min_turning_radius` is treated as an error. For rotate-in-place profiles,
+the same condition is reported as a warning.
+
+The validator also samples the generated path through the uploaded occupancy
+grid. Intersections with occupied cells are blocking errors; intersections with
+unknown cells are warnings. This is a point/path-cell check, not full robot
+footprint clearance.
 
 Native project JSON is intentionally separate from `nav_msgs/Path`: it preserves
 design-time information that Nav2 path messages do not represent, such as
@@ -152,10 +181,16 @@ collision-free, dynamically feasible, or safe for execution on a real robot.
 
 ## Known Limitations
 
-- Arc tool creates a simple half-arc from center and edge click.
+- Explicit arc segments are preserved and resampled directly in this PoC; other
+  smoothing methods are bypassed for arc-segment paths so the arc intent is not
+  distorted.
 - No project save/load.
 - No undo/redo.
 - No direct Nav2 action client integration.
-- No real collision checking against occupied cells yet.
+- No full robot-footprint collision or clearance checking yet; occupied cells
+  are checked along the sampled path centerline only.
 - Smoothing methods are geometric PoC implementations only and do not prove
   controller feasibility.
+- The backend includes reference smoothing, validation, transform, and export
+  services for API parity, while the interactive trajectory computation still
+  runs in the frontend.

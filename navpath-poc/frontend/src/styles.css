@@ -147,6 +147,17 @@ button:disabled:hover {
   max-width: 24rem;
 }
 
+.autosaveToggle {
+  align-items: center !important;
+  display: flex !important;
+  gap: 0.35rem !important;
+}
+
+.autosaveToggle span {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
 .zoomControls {
   gap: 0.35rem;
 }

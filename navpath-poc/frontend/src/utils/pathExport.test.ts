@@ -13,4 +13,20 @@ describe('path export', () => {
     expect(path.poses[0].pose.orientation.z).toBeCloseTo(Math.sqrt(0.5));
     expect(path.poses[0].pose.orientation.w).toBeCloseTo(Math.sqrt(0.5));
   });
+
+  it('uses stored waypoint quaternions when available', () => {
+    const path = buildNavPath(
+      [
+        {
+          x: 0,
+          y: 0,
+          yaw: Math.PI,
+          orientation_quaternion: { x: 0, y: 0, z: 0.25, w: 0.75 },
+        },
+      ],
+      'map',
+    );
+
+    expect(path.poses[0].pose.orientation).toEqual({ x: 0, y: 0, z: 0.25, w: 0.75 });
+  });
 });

@@ -1,6 +1,6 @@
 import { useStudioStore } from '../store/useStudioStore';
 import { distance } from '../utils/coordinates';
-import { yawToQuaternion } from '../utils/quaternions';
+import { waypointQuaternion } from '../utils/headingGeneration';
 
 export function PropertiesSidebar() {
   const elements = useStudioStore((state) => state.elements);
@@ -25,7 +25,7 @@ export function PropertiesSidebar() {
   const selected = elements.find((element) => element.id === selectedId);
   const selectedWaypoint =
     selectedWaypointIndex === null ? null : computedTrajectory?.waypoints[selectedWaypointIndex] ?? null;
-  const selectedQuaternion = selectedWaypoint ? yawToQuaternion(selectedWaypoint.yaw) : null;
+  const selectedQuaternion = selectedWaypoint ? waypointQuaternion(selectedWaypoint) : null;
 
   return (
     <aside className="sidebar">
@@ -73,7 +73,10 @@ export function PropertiesSidebar() {
           <p>
             Position: {selectedWaypoint.x.toFixed(3)}, {selectedWaypoint.y.toFixed(3)} m
           </p>
-          <p>Yaw: {selectedWaypoint.yaw.toFixed(3)} rad / {radiansToDegrees(selectedWaypoint.yaw).toFixed(1)} deg</p>
+          <p>
+            Yaw: {selectedWaypoint.yaw.toFixed(3)} rad /{' '}
+            {(selectedWaypoint.yaw_deg ?? radiansToDegrees(selectedWaypoint.yaw)).toFixed(1)} deg
+          </p>
           <p>
             Quaternion: {selectedQuaternion.x.toFixed(3)}, {selectedQuaternion.y.toFixed(3)},{' '}
             {selectedQuaternion.z.toFixed(3)}, {selectedQuaternion.w.toFixed(3)}
@@ -284,6 +287,8 @@ export function PropertiesSidebar() {
                   {computedTrajectory.validation.metrics.max_spacing_m.toFixed(3)} m
                 </p>
                 <p>Max yaw jump: {computedTrajectory.validation.metrics.max_yaw_jump_deg.toFixed(1)} deg</p>
+                <p>Max curvature: {computedTrajectory.validation.metrics.max_curvature.toFixed(3)} 1/m</p>
+                <p>Zero-length segments: {computedTrajectory.validation.metrics.zero_length_segment_count}</p>
                 {computedTrajectory.validation.errors.map((issue) => (
                   <p className="validationError" key={`${issue.type}-${issue.message}`}>
                     {issue.message}
@@ -359,7 +364,7 @@ export function PropertiesSidebar() {
                 <span>{index + 1}</span>
                 <span>{waypoint.x.toFixed(2)}</span>
                 <span>{waypoint.y.toFixed(2)}</span>
-                <span>{radiansToDegrees(waypoint.yaw).toFixed(1)}</span>
+                <span>{(waypoint.yaw_deg ?? radiansToDegrees(waypoint.yaw)).toFixed(1)}</span>
               </button>
             ))}
           </div>

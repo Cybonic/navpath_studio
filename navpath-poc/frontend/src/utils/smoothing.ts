@@ -1,5 +1,6 @@
 import type { ControlPoint, SmoothingSettings, ValidationIssue, Waypoint, WorldPoint } from '../types';
 import { distance } from './coordinates';
+import { normalizeAngle, waypointWithOrientation } from './headingGeneration';
 
 const EPSILON = 1e-6;
 
@@ -27,7 +28,7 @@ export function computeSmoothWaypoints(controlPoints: ControlPoint[], settings: 
   const smoothedPolyline = buildSmoothedPolyline(roughPolyline, settings, spacing, warnings);
 
   return {
-    waypoints: resamplePolyline(smoothedPolyline, spacing),
+    waypoints: resamplePolyline(smoothedPolyline, spacing, 'computed_path'),
     warnings,
   };
 }
@@ -62,10 +63,19 @@ function buildSmoothedPolyline(
   }
 }
 
-export function resamplePolyline(points: WorldPoint[], spacing: number): Waypoint[] {
+export function resamplePolyline(points: WorldPoint[], spacing: number, sourcePrimitiveId?: string): Waypoint[] {
   const cleaned = removeDuplicatePoints(points);
   if (cleaned.length === 0) return [];
-  if (cleaned.length === 1) return [{ id: createId('wp'), ...cleaned[0], yaw: 0 }];
+  if (cleaned.length === 1) {
+    return [
+      waypointWithOrientation({
+        id: createId('wp'),
+        point: cleaned[0],
+        yaw: 0,
+        sourcePrimitiveId,
+      }),
+    ];
+  }
 
   const safeSpacing = clampSpacing(spacing);
   const segments = cleaned.slice(1).map((point, index) => ({
@@ -74,7 +84,16 @@ export function resamplePolyline(points: WorldPoint[], spacing: number): Waypoin
     length: distance(cleaned[index], point),
   }));
   const totalLength = segments.reduce((total, segment) => total + segment.length, 0);
-  if (totalLength <= EPSILON) return [{ id: createId('wp'), ...cleaned[0], yaw: 0 }];
+  if (totalLength <= EPSILON) {
+    return [
+      waypointWithOrientation({
+        id: createId('wp'),
+        point: cleaned[0],
+        yaw: 0,
+        sourcePrimitiveId,
+      }),
+    ];
+  }
 
   const targets: number[] = [];
   for (let target = 0; target < totalLength; target += safeSpacing) {
@@ -100,7 +119,12 @@ export function resamplePolyline(points: WorldPoint[], spacing: number): Waypoin
     const x = segment.start.x + (segment.end.x - segment.start.x) * segmentT;
     const y = segment.start.y + (segment.end.y - segment.start.y) * segmentT;
     const yaw = Math.atan2(segment.end.y - segment.start.y, segment.end.x - segment.start.x);
-    return { id: createId('wp'), x, y, yaw };
+    return waypointWithOrientation({
+      id: createId('wp'),
+      point: { x, y },
+      yaw,
+      sourcePrimitiveId,
+    });
   });
 }
 
@@ -133,29 +157,28 @@ function buildCornerRoundedPolyline(
       continue;
     }
 
-    const towardPrevious = {
-      x: (previous.x - corner.x) / incomingLength,
-      y: (previous.y - corner.y) / incomingLength,
+    const incomingDirection = {
+      x: (corner.x - previous.x) / incomingLength,
+      y: (corner.y - previous.y) / incomingLength,
     };
-    const towardNext = {
+    const outgoingDirection = {
       x: (next.x - corner.x) / outgoingLength,
       y: (next.y - corner.y) / outgoingLength,
     };
-    const interiorAngle = Math.acos(clamp(dot(towardPrevious, towardNext), -1, 1));
-    const turnAngle = Math.PI - interiorAngle;
+    const headingChange = Math.acos(clamp(dot(incomingDirection, outgoingDirection), -1, 1));
 
-    if (turnAngle < 0.03 || interiorAngle < 0.03) {
+    if (headingChange < 0.03 || Math.PI - headingChange < 0.03) {
       pushIfDistinct(output, corner);
       continue;
     }
 
     const maxTangentDistance = Math.min(incomingLength, outgoingLength) * 0.45;
     let radius = requestedRadius;
-    let tangentDistance = radius / Math.tan(interiorAngle / 2);
+    let tangentDistance = radius * Math.tan(headingChange / 2);
 
     if (tangentDistance > maxTangentDistance) {
       tangentDistance = maxTangentDistance;
-      radius = tangentDistance * Math.tan(interiorAngle / 2);
+      radius = tangentDistance / Math.tan(headingChange / 2);
       warnings.push({
         type: 'corner_radius_reduced',
         severity: 'warning',
@@ -170,19 +193,39 @@ function buildCornerRoundedPolyline(
     }
 
     const tangentStart = {
-      x: corner.x + towardPrevious.x * tangentDistance,
-      y: corner.y + towardPrevious.y * tangentDistance,
+      x: corner.x - incomingDirection.x * tangentDistance,
+      y: corner.y - incomingDirection.y * tangentDistance,
     };
     const tangentEnd = {
-      x: corner.x + towardNext.x * tangentDistance,
-      y: corner.y + towardNext.y * tangentDistance,
+      x: corner.x + outgoingDirection.x * tangentDistance,
+      y: corner.y + outgoingDirection.y * tangentDistance,
     };
-    const samples = Math.max(4, Math.ceil((Math.max(radius, spacing) * Math.max(turnAngle, 0.1)) / spacing));
+    const turnSign = Math.sign(cross(incomingDirection, outgoingDirection));
+    if (turnSign === 0) {
+      pushIfDistinct(output, corner);
+      continue;
+    }
+    const normal = turnSign > 0
+      ? { x: -incomingDirection.y, y: incomingDirection.x }
+      : { x: incomingDirection.y, y: -incomingDirection.x };
+    const center = {
+      x: tangentStart.x + normal.x * radius,
+      y: tangentStart.y + normal.y * radius,
+    };
+    const startAngle = Math.atan2(tangentStart.y - center.y, tangentStart.x - center.x);
+    const endAngle = Math.atan2(tangentEnd.y - center.y, tangentEnd.x - center.x);
+    const delta = normalizeArcDelta(startAngle, endAngle, turnSign > 0);
+    const arcLength = Math.abs(delta) * radius;
+    const samples = Math.max(4, Math.ceil(arcLength / spacing));
 
     pushIfDistinct(output, tangentStart);
     for (let sample = 1; sample < samples; sample += 1) {
       const t = sample / samples;
-      pushIfDistinct(output, quadraticPoint(tangentStart, corner, tangentEnd, t));
+      const angle = startAngle + delta * t;
+      pushIfDistinct(output, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      });
     }
     pushIfDistinct(output, tangentEnd);
   }
@@ -424,16 +467,19 @@ function pushIfDistinct(points: WorldPoint[], point: WorldPoint): void {
   }
 }
 
-function quadraticPoint(start: WorldPoint, control: WorldPoint, end: WorldPoint, t: number): WorldPoint {
-  const inverse = 1 - t;
-  return {
-    x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x,
-    y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y,
-  };
-}
-
 function dot(a: WorldPoint, b: WorldPoint): number {
   return a.x * b.x + a.y * b.y;
+}
+
+function cross(a: WorldPoint, b: WorldPoint): number {
+  return a.x * b.y - a.y * b.x;
+}
+
+function normalizeArcDelta(startAngle: number, endAngle: number, counterClockwise: boolean): number {
+  let delta = normalizeAngle(endAngle - startAngle);
+  if (counterClockwise && delta <= 0) delta += Math.PI * 2;
+  if (!counterClockwise && delta >= 0) delta -= Math.PI * 2;
+  return delta;
 }
 
 function clamp(value: number, min: number, max: number): number {

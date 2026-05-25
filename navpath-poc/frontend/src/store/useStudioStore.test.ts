@@ -120,6 +120,7 @@ describe('computed trajectory workflow', () => {
 function resetStoreForTest(): void {
   useStudioStore.setState({
     map: null,
+    occupancyGrid: null,
     imageDataUrl: null,
     tool: 'line',
     spacing: 0.1,

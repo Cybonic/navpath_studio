@@ -1,5 +1,6 @@
 import type { Waypoint, WorldPoint } from '../types';
 import { distance } from './coordinates';
+import { waypointWithOrientation } from './headingGeneration';
 
 const EPSILON = 1e-9;
 
@@ -7,21 +8,25 @@ export function generateLineWaypoints(
   start: WorldPoint,
   end: WorldPoint,
   spacing: number,
+  sourcePrimitiveId?: string,
 ): Waypoint[] {
   const length = distance(start, end);
   const yaw = Math.atan2(end.y - start.y, end.x - start.x);
   if (length < EPSILON) {
-    return [{ ...start, yaw }];
+    return [waypointWithOrientation({ point: start, yaw, sourcePrimitiveId })];
   }
 
   const segments = Math.max(1, Math.ceil(length / spacing));
   return Array.from({ length: segments + 1 }, (_, index) => {
     const t = index / segments;
-    return {
-      x: start.x + (end.x - start.x) * t,
-      y: start.y + (end.y - start.y) * t,
+    return waypointWithOrientation({
+      point: {
+        x: start.x + (end.x - start.x) * t,
+        y: start.y + (end.y - start.y) * t,
+      },
       yaw,
-    };
+      sourcePrimitiveId,
+    });
   });
 }
 
@@ -32,9 +37,10 @@ export function generateArcWaypoints(
   endAngle: number,
   clockwise: boolean,
   spacing: number,
+  sourcePrimitiveId?: string,
 ): Waypoint[] {
   if (radius < EPSILON) {
-    return [{ ...center, yaw: 0 }];
+    return [waypointWithOrientation({ point: center, yaw: 0, sourcePrimitiveId })];
   }
 
   const delta = normalizeArcDelta(startAngle, endAngle, clockwise);
@@ -44,11 +50,14 @@ export function generateArcWaypoints(
   return Array.from({ length: segments + 1 }, (_, index) => {
     const t = index / segments;
     const angle = startAngle + delta * t;
-    return {
-      x: center.x + radius * Math.cos(angle),
-      y: center.y + radius * Math.sin(angle),
+    return waypointWithOrientation({
+      point: {
+        x: center.x + radius * Math.cos(angle),
+        y: center.y + radius * Math.sin(angle),
+      },
       yaw: angle + (clockwise ? -Math.PI / 2 : Math.PI / 2),
-    };
+      sourcePrimitiveId,
+    });
   });
 }
 
@@ -58,10 +67,11 @@ export function generateArcThroughEndpointsWaypoints(
   radius: number,
   clockwise: boolean,
   spacing: number,
+  sourcePrimitiveId?: string,
 ): Waypoint[] {
   const chord = distance(start, end);
   if (chord < EPSILON) {
-    return [{ ...start, yaw: 0 }];
+    return [waypointWithOrientation({ point: start, yaw: 0, sourcePrimitiveId })];
   }
 
   if (radius + EPSILON < chord / 2) {
@@ -88,7 +98,7 @@ export function generateArcThroughEndpointsWaypoints(
   const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
   const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
 
-  return generateArcWaypoints(center, safeRadius, startAngle, endAngle, clockwise, spacing);
+  return generateArcWaypoints(center, safeRadius, startAngle, endAngle, clockwise, spacing, sourcePrimitiveId);
 }
 
 function normalizeArcDelta(startAngle: number, endAngle: number, clockwise: boolean): number {

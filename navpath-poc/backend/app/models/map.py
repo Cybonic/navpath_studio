@@ -29,6 +29,14 @@ class WorldPoint(BaseModel):
     y: float
 
 
+class OccupancyGrid(BaseModel):
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    # Nav2-style compact values: 0 free, 100 occupied, -1 unknown.
+    cells: list[int]
+
+
 class MapUploadResponse(BaseModel):
     metadata: MapMetadata
     image_data_url: str
+    occupancy_grid: OccupancyGrid

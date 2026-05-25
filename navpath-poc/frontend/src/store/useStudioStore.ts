@@ -6,6 +6,7 @@ import type {
   ControlPoint,
   DrawingElement,
   MapMetadata,
+  OccupancyGrid,
   OrientationDisplaySettings,
   RobotProfile,
   SmoothingSettings,
@@ -15,9 +16,11 @@ import type {
   Waypoint,
   WorldPoint,
 } from '../types';
+import type { AutosaveSnapshot } from '../utils/autosave';
 import { computeSmoothWaypoints } from '../utils/smoothing';
 import { validateWaypoints } from '../utils/validation';
 import { generateArcThroughEndpointsWaypoints, generateLineWaypoints } from '../utils/waypointGeneration';
+import { waypointWithOrientation } from '../utils/headingGeneration';
 
 interface CanvasPan {
   x: number;
@@ -26,6 +29,7 @@ interface CanvasPan {
 
 interface StudioState {
   map: MapMetadata | null;
+  occupancyGrid: OccupancyGrid | null;
   imageDataUrl: string | null;
   tool: ToolMode;
   spacing: number;
@@ -43,7 +47,12 @@ interface StudioState {
   cursorWorld: WorldPoint | null;
   draftPoint: WorldPoint | null;
   statusMessage: string | null;
-  setMap: (map: MapMetadata, imageDataUrl: string) => void;
+  autosaveEnabled: boolean;
+  lastAutosavedAt: string | null;
+  setMap: (map: MapMetadata, imageDataUrl: string, occupancyGrid?: OccupancyGrid | null) => void;
+  setAutosaveEnabled: (enabled: boolean) => void;
+  markAutosaved: (savedAt: string) => void;
+  restoreAutosaveSnapshot: (snapshot: AutosaveSnapshot) => void;
   setTool: (tool: ToolMode) => void;
   setSpacing: (spacing: number) => void;
   setSmoothingSettings: (settings: Partial<SmoothingSettings>) => void;
@@ -123,6 +132,7 @@ const defaultOrientationDisplay: OrientationDisplaySettings = {
 
 export const useStudioStore = create<StudioState>((set, get) => ({
   map: null,
+  occupancyGrid: null,
   imageDataUrl: null,
   tool: 'line',
   spacing: defaultSmoothingSettings.waypoint_spacing,
@@ -140,9 +150,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   cursorWorld: null,
   draftPoint: null,
   statusMessage: null,
-  setMap: (map, imageDataUrl) =>
+  autosaveEnabled: true,
+  lastAutosavedAt: null,
+  setMap: (map, imageDataUrl, occupancyGrid = null) =>
     set({
       map,
+      occupancyGrid,
       imageDataUrl,
       elements: [],
       trajectoryPoints: [],
@@ -153,6 +166,35 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       statusMessage: null,
       zoom: 1,
       pan: { x: 0, y: 0 },
+    }),
+  setAutosaveEnabled: (enabled) =>
+    set({
+      autosaveEnabled: enabled,
+      lastAutosavedAt: enabled ? get().lastAutosavedAt : null,
+      statusMessage: enabled ? 'Autosave enabled.' : 'Autosave disabled for this browser.',
+    }),
+  markAutosaved: (savedAt) => set({ lastAutosavedAt: savedAt }),
+  restoreAutosaveSnapshot: (snapshot) =>
+    set({
+      map: snapshot.map,
+      occupancyGrid: snapshot.occupancyGrid,
+      imageDataUrl: snapshot.imageDataUrl,
+      trajectoryPoints: snapshot.trajectoryPoints,
+      trajectorySegments: snapshot.trajectorySegments,
+      smoothingSettings: snapshot.smoothingSettings,
+      spacing: snapshot.smoothingSettings.waypoint_spacing,
+      robotProfile: snapshot.robotProfile,
+      computedTrajectory: snapshot.computedTrajectory,
+      orientationDisplay: snapshot.orientationDisplay,
+      elements: snapshot.actionNodes,
+      zoom: snapshot.zoom,
+      pan: snapshot.pan,
+      selectedId: null,
+      selectedWaypointIndex: null,
+      cursorWorld: null,
+      draftPoint: null,
+      statusMessage: snapshot.map ? 'Restored autosaved workspace.' : null,
+      lastAutosavedAt: snapshot.saved_at,
     }),
   setTool: (tool) => set({ tool, draftPoint: null, statusMessage: null }),
   setSpacing: (spacing) =>
@@ -192,10 +234,12 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setSelectedWaypointIndex: (index) => set({ selectedWaypointIndex: index, selectedId: null }),
   computeSmoothTrajectory: () =>
     set((state) => {
-      const smoothResult = computeSmoothWaypoints(state.trajectoryPoints, state.smoothingSettings);
+      const smoothResult = computeTrajectoryFromCurrentIntent(state);
       const validation = withAdditionalWarnings(
         validateWaypoints(smoothResult.waypoints, {
           map: state.map,
+          occupancyGrid: state.occupancyGrid,
+          robotProfile: state.robotProfile,
           maxSpacing: state.robotProfile.path_constraints.max_spacing,
           maxYawJumpDeg: state.smoothingSettings.max_yaw_jump_deg,
         }),
@@ -398,11 +442,15 @@ function reattachActionNodes(elements: DrawingElement[], trajectory: ComputedTra
   });
 }
 
-function withAdditionalWarnings(report: ValidationReport, warnings: ValidationReport['warnings']): ValidationReport {
-  const mergedWarnings = [...warnings, ...report.warnings];
+function withAdditionalWarnings(report: ValidationReport, issues: ValidationReport['warnings']): ValidationReport {
+  const extraErrors = issues.filter((issue) => issue.severity === 'error');
+  const extraWarnings = issues.filter((issue) => issue.severity !== 'error');
+  const mergedErrors = [...extraErrors, ...report.errors];
+  const mergedWarnings = [...extraWarnings, ...report.warnings];
   return {
     ...report,
-    status: report.errors.length > 0 ? 'invalid' : mergedWarnings.length > 0 ? 'valid_with_warnings' : 'valid',
+    status: mergedErrors.length > 0 ? 'invalid' : mergedWarnings.length > 0 ? 'valid_with_warnings' : 'valid',
+    errors: mergedErrors,
     warnings: mergedWarnings,
   };
 }
@@ -428,7 +476,9 @@ export function buildTrajectoryWaypoints(
   spacing: number,
 ): Waypoint[] {
   if (points.length === 0) return [];
-  if (points.length === 1) return [{ ...points[0], yaw: 0 }];
+  if (points.length === 1) {
+    return [waypointWithOrientation({ point: points[0], yaw: 0, sourcePrimitiveId: 'single_point' })];
+  }
 
   return points.flatMap((point, index) => {
     const next = points[index + 1];
@@ -437,10 +487,47 @@ export function buildTrajectoryWaypoints(
     const segment = segments[index];
     const waypoints =
       segment?.type === 'arc'
-        ? generateArcThroughEndpointsWaypoints(point, next, segment.radius, segment.clockwise, spacing)
-        : generateLineWaypoints(point, next, spacing);
+        ? generateArcThroughEndpointsWaypoints(point, next, segment.radius, segment.clockwise, spacing, segment.id)
+        : generateLineWaypoints(point, next, spacing, segment?.id ?? `segment_${index + 1}`);
     return index === 0 ? waypoints : waypoints.slice(1);
   });
+}
+
+function computeTrajectoryFromCurrentIntent(state: StudioState): {
+  waypoints: Waypoint[];
+  warnings: ValidationReport['warnings'];
+} {
+  const hasExplicitArc = state.trajectorySegments.some((segment) => segment.type === 'arc');
+  if (!hasExplicitArc) {
+    return computeSmoothWaypoints(state.trajectoryPoints, state.smoothingSettings);
+  }
+
+  const warnings: ValidationReport['warnings'] = [];
+  if (state.smoothingSettings.method !== 'none') {
+    warnings.push({
+      type: 'explicit_arc_smoothing_bypassed',
+      severity: 'info',
+      message: 'Explicit arc segments are preserved and resampled directly for this PoC.',
+    });
+  }
+
+  try {
+    return {
+      waypoints: buildTrajectoryWaypoints(
+        state.trajectoryPoints,
+        state.trajectorySegments,
+        state.smoothingSettings.waypoint_spacing,
+      ),
+      warnings,
+    };
+  } catch (error) {
+    warnings.push({
+      type: 'invalid_arc',
+      severity: 'error',
+      message: error instanceof Error ? error.message : 'Arc segment could not be generated.',
+    });
+    return { waypoints: [], warnings };
+  }
 }
 
 function defaultArcRadius(start: WorldPoint, end: WorldPoint): number {

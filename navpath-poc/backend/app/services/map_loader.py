@@ -1,6 +1,5 @@
 import base64
 import io
-import math
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -8,7 +7,8 @@ import yaml
 from fastapi import UploadFile
 from PIL import Image, ImageOps
 
-from app.models.map import MapMetadata, MapUploadResponse
+from app.models.map import MapMetadata, MapUploadResponse, OccupancyGrid
+from app.services.coordinate_transform import pixel_to_world, world_to_pixel
 
 REQUIRED_MAP_FIELDS = {
     "image",
@@ -96,6 +96,7 @@ async def load_map_upload(
         raise ValueError("Unsupported or invalid map image file") from exc
 
     gray = ImageOps.grayscale(image)
+    occupancy_grid = _occupancy_grid(gray, normalized)
     display = _occupancy_display_image(gray, normalized)
     buffer = io.BytesIO()
     display.save(buffer, format="PNG")
@@ -116,6 +117,7 @@ async def load_map_upload(
     return MapUploadResponse(
         metadata=metadata,
         image_data_url=f"data:image/png;base64,{encoded}",
+        occupancy_grid=occupancy_grid,
     )
 
 
@@ -145,31 +147,22 @@ def _occupancy_display_image(image: Image.Image, metadata: dict[str, Any]) -> Im
     return out
 
 
-def pixel_to_world(px: float, py: float, metadata: dict[str, Any]) -> dict[str, float]:
-    resolution = float(metadata["resolution"])
-    origin_x, origin_y, origin_yaw = [float(v) for v in metadata["origin"]]
-    height = float(metadata["height"])
+def _occupancy_grid(image: Image.Image, metadata: dict[str, Any]) -> OccupancyGrid:
+    cells: list[int] = []
+    negate = metadata["negate"]
+    occupied_thresh = metadata["occupied_thresh"]
+    free_thresh = metadata["free_thresh"]
 
-    local_x = px * resolution
-    local_y = (height - py) * resolution
-    cos_yaw = math.cos(origin_yaw)
-    sin_yaw = math.sin(origin_yaw)
+    pixels = image.load()
+    for y in range(image.height):
+        for x in range(image.width):
+            pixel = pixels[x, y] / 255.0
+            occ = pixel if negate else 1.0 - pixel
+            if occ >= occupied_thresh:
+                cells.append(100)
+            elif occ <= free_thresh:
+                cells.append(0)
+            else:
+                cells.append(-1)
 
-    world_x = origin_x + local_x * cos_yaw - local_y * sin_yaw
-    world_y = origin_y + local_x * sin_yaw + local_y * cos_yaw
-    return {"x": world_x, "y": world_y}
-
-
-def world_to_pixel(x: float, y: float, metadata: dict[str, Any]) -> dict[str, float]:
-    resolution = float(metadata["resolution"])
-    origin_x, origin_y, origin_yaw = [float(v) for v in metadata["origin"]]
-    height = float(metadata["height"])
-
-    dx = x - origin_x
-    dy = y - origin_y
-    cos_yaw = math.cos(origin_yaw)
-    sin_yaw = math.sin(origin_yaw)
-
-    local_x = dx * cos_yaw + dy * sin_yaw
-    local_y = -dx * sin_yaw + dy * cos_yaw
-    return {"px": local_x / resolution, "py": height - local_y / resolution}
+    return OccupancyGrid(width=image.width, height=image.height, cells=cells)

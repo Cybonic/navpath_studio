@@ -1,5 +1,5 @@
 import type { NavPathExport, Waypoint } from '../types';
-import { yawToQuaternion } from './quaternions';
+import { waypointQuaternion } from './headingGeneration';
 
 export function buildNavPath(waypoints: Waypoint[], frameId = 'map'): NavPathExport {
   return {
@@ -16,7 +16,7 @@ export function buildNavPath(waypoints: Waypoint[], frameId = 'map'): NavPathExp
           y: waypoint.y,
           z: 0,
         },
-        orientation: yawToQuaternion(waypoint.yaw),
+        orientation: waypointQuaternion(waypoint),
       },
     })),
   };

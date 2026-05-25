@@ -13,6 +13,12 @@ export interface MapMetadata {
   frame_id: string;
 }
 
+export interface OccupancyGrid {
+  width: number;
+  height: number;
+  cells: number[];
+}
+
 export interface PixelPoint {
   px: number;
   py: number;
@@ -37,6 +43,8 @@ export interface Quaternion {
 export interface Waypoint extends WorldPoint {
   id?: string;
   yaw: number;
+  yaw_deg?: number;
+  orientation_quaternion?: Quaternion;
   source_primitive_id?: string;
 }
 
@@ -152,7 +160,9 @@ export interface ValidationReport {
     min_spacing_m: number;
     max_spacing_m: number;
     max_yaw_jump_deg: number;
+    zero_length_segment_count: number;
     duplicate_waypoint_count: number;
+    max_curvature: number;
   };
   warnings: ValidationIssue[];
   errors: ValidationIssue[];

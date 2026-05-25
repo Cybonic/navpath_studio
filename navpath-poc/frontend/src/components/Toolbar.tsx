@@ -17,7 +17,10 @@ export function Toolbar() {
   const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
   const elements = useStudioStore((state) => state.elements);
   const statusMessage = useStudioStore((state) => state.statusMessage);
+  const autosaveEnabled = useStudioStore((state) => state.autosaveEnabled);
+  const lastAutosavedAt = useStudioStore((state) => state.lastAutosavedAt);
   const setTool = useStudioStore((state) => state.setTool);
+  const setAutosaveEnabled = useStudioStore((state) => state.setAutosaveEnabled);
   const setSpacing = useStudioStore((state) => state.setSpacing);
   const computeSmoothTrajectory = useStudioStore((state) => state.computeSmoothTrajectory);
   const clearAllContent = useStudioStore((state) => state.clearAllContent);
@@ -82,6 +85,17 @@ export function Toolbar() {
         </span>
       </div>
       {statusMessage && <span className="toolbarStatus">{statusMessage}</span>}
+      <label className="autosaveToggle">
+        <input
+          checked={autosaveEnabled}
+          type="checkbox"
+          onChange={(event) => setAutosaveEnabled(event.target.checked)}
+        />
+        Autosave
+        {autosaveEnabled && lastAutosavedAt && (
+          <span title={lastAutosavedAt}>{formatSaveTime(lastAutosavedAt)}</span>
+        )}
+      </label>
       <button disabled={!hasUserContent} onClick={confirmClearAllContent} type="button">
         Clear All Content
       </button>
@@ -115,4 +129,10 @@ export function Toolbar() {
       </div>
     </div>
   );
+}
+
+function formatSaveTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'saved';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
