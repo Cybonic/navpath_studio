@@ -15,10 +15,12 @@ export function Toolbar() {
   const zoom = useStudioStore((state) => state.zoom);
   const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
   const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
+  const elements = useStudioStore((state) => state.elements);
   const statusMessage = useStudioStore((state) => state.statusMessage);
   const setTool = useStudioStore((state) => state.setTool);
   const setSpacing = useStudioStore((state) => state.setSpacing);
   const computeSmoothTrajectory = useStudioStore((state) => state.computeSmoothTrajectory);
+  const clearAllContent = useStudioStore((state) => state.clearAllContent);
   const zoomIn = useStudioStore((state) => state.zoomIn);
   const zoomOut = useStudioStore((state) => state.zoomOut);
   const resetZoom = useStudioStore((state) => state.resetZoom);
@@ -29,6 +31,17 @@ export function Toolbar() {
     : computedTrajectory.is_stale
       ? 'Trajectory stale'
       : `${computedTrajectory.validation?.status ?? 'computed'} · ${computedTrajectory.waypoints.length} waypoints`;
+  const hasUserContent = trajectoryPoints.length > 0 || Boolean(computedTrajectory) || elements.length > 0;
+
+  const confirmClearAllContent = () => {
+    if (!hasUserContent) return;
+    const confirmed = window.confirm(
+      'Clear rough points, computed paths, generated waypoints, and action nodes? The loaded map and robot profile will stay available.',
+    );
+    if (confirmed) {
+      clearAllContent();
+    }
+  };
 
   return (
     <div className="toolbar">
@@ -69,6 +82,9 @@ export function Toolbar() {
         </span>
       </div>
       {statusMessage && <span className="toolbarStatus">{statusMessage}</span>}
+      <button disabled={!hasUserContent} onClick={confirmClearAllContent} type="button">
+        Clear All Content
+      </button>
       <div className="zoomControls" aria-label="Map zoom controls">
         <button onClick={zoomOut} title="Zoom out" type="button">
           -

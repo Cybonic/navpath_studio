@@ -96,6 +96,25 @@ describe('computed trajectory workflow', () => {
     expect(staleAction?.type === 'action' ? staleAction.attachment_status : null).toBe('stale');
     expect(useStudioStore.getState().allWaypoints()).toEqual([]);
   });
+
+  it('clears all user-created content while preserving map-independent defaults', () => {
+    resetStoreForTest();
+    const store = useStudioStore.getState();
+
+    store.addTrajectoryPoint({ x: 0, y: 0 });
+    store.addTrajectoryPoint({ x: 1, y: 0 });
+    useStudioStore.getState().computeSmoothTrajectory();
+    useStudioStore.getState().addActionAtPoint({ x: 0.5, y: 0 });
+
+    useStudioStore.getState().clearAllContent();
+
+    expect(useStudioStore.getState().trajectoryPoints).toEqual([]);
+    expect(useStudioStore.getState().trajectorySegments).toEqual([]);
+    expect(useStudioStore.getState().computedTrajectory).toBeNull();
+    expect(useStudioStore.getState().elements).toEqual([]);
+    expect(useStudioStore.getState().allWaypoints()).toEqual([]);
+    expect(useStudioStore.getState().smoothingSettings.waypoint_spacing).toBe(0.1);
+  });
 });
 
 function resetStoreForTest(): void {
@@ -109,8 +128,16 @@ function resetStoreForTest(): void {
     trajectoryPoints: [],
     trajectorySegments: [],
     computedTrajectory: null,
+    orientationDisplay: {
+      show_arrows: true,
+      show_yaw_labels: false,
+      arrow_stride: 1,
+      arrow_length_m: 0.25,
+      selected_waypoint_show_quaternion: true,
+    },
     elements: [],
     selectedId: null,
+    selectedWaypointIndex: null,
     cursorWorld: null,
     draftPoint: null,
     statusMessage: null,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from 'react-konva';
+import { Arrow, Circle, Group, Image as KonvaImage, Layer, Line, Stage, Text } from 'react-konva';
 import useImage from 'use-image';
 import type Konva from 'konva';
 
@@ -8,6 +8,11 @@ import { worldToPixel, pixelToWorld } from '../utils/coordinates';
 
 const DEFAULT_VIEWPORT_WIDTH = 960;
 const DEFAULT_VIEWPORT_HEIGHT = 640;
+const COMPUTED_TRAJECTORY_COLOR = '#0f766e';
+const STALE_TRAJECTORY_COLOR = '#f59e0b';
+const ORIENTATION_ARROW_COLOR = '#d55e00';
+const SELECTED_WAYPOINT_COLOR = '#0072b2';
+const ORIENTATION_HALO_COLOR = '#ffffff';
 
 export function MapCanvas() {
   const map = useStudioStore((state) => state.map);
@@ -15,6 +20,8 @@ export function MapCanvas() {
   const elements = useStudioStore((state) => state.elements);
   const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
   const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
+  const orientationDisplay = useStudioStore((state) => state.orientationDisplay);
+  const selectedWaypointIndex = useStudioStore((state) => state.selectedWaypointIndex);
   const tool = useStudioStore((state) => state.tool);
   const zoom = useStudioStore((state) => state.zoom);
   const pan = useStudioStore((state) => state.pan);
@@ -26,6 +33,7 @@ export function MapCanvas() {
   const addTrajectoryPoint = useStudioStore((state) => state.addTrajectoryPoint);
   const addArcTrajectoryPoint = useStudioStore((state) => state.addArcTrajectoryPoint);
   const setSelectedId = useStudioStore((state) => state.setSelectedId);
+  const setSelectedWaypointIndex = useStudioStore((state) => state.setSelectedWaypointIndex);
   const setZoom = useStudioStore((state) => state.setZoom);
   const setPan = useStudioStore((state) => state.setPan);
   const [image] = useImage(imageDataUrl ?? '');
@@ -159,7 +167,14 @@ export function MapCanvas() {
             {image && <KonvaImage image={image} width={mapWidth} height={mapHeight} />}
             <RoughControlView points={trajectoryPoints} map={map} scale={scale} />
             {computedTrajectory && (
-              <ComputedTrajectoryView trajectory={computedTrajectory} map={map} scale={scale} />
+              <ComputedTrajectoryView
+                trajectory={computedTrajectory}
+                orientationDisplay={orientationDisplay}
+                selectedWaypointIndex={selectedWaypointIndex}
+                map={map}
+                scale={scale}
+                onSelectWaypoint={setSelectedWaypointIndex}
+              />
             )}
             {elements.map((element) => (
               <ElementView
@@ -223,18 +238,24 @@ function RoughControlView({
 
 function ComputedTrajectoryView({
   trajectory,
+  orientationDisplay,
+  selectedWaypointIndex,
   map,
   scale,
+  onSelectWaypoint,
 }: {
   trajectory: NonNullable<ReturnType<typeof useStudioStore.getState>['computedTrajectory']>;
+  orientationDisplay: ReturnType<typeof useStudioStore.getState>['orientationDisplay'];
+  selectedWaypointIndex: number | null;
   map: NonNullable<ReturnType<typeof useStudioStore.getState>['map']>;
   scale: number;
+  onSelectWaypoint: (index: number | null) => void;
 }) {
   const linePoints = trajectory.waypoints.flatMap((point) => {
     const pixel = worldToPixel(point, map);
     return [pixel.px * scale, pixel.py * scale];
   });
-  const color = trajectory.is_stale ? '#f59e0b' : '#0f766e';
+  const color = trajectory.is_stale ? STALE_TRAJECTORY_COLOR : COMPUTED_TRAJECTORY_COLOR;
 
   return (
     <Group>
@@ -242,23 +263,73 @@ function ComputedTrajectoryView({
         <Line points={linePoints} stroke={color} strokeWidth={4} lineCap="round" lineJoin="round" />
       )}
       {trajectory.waypoints.map((waypoint, index) => {
-        if (index % 5 !== 0 && index !== trajectory.waypoints.length - 1) return null;
+        const shouldShowOrientation =
+          orientationDisplay.show_arrows &&
+          !trajectory.is_stale &&
+          (index % orientationDisplay.arrow_stride === 0 || index === trajectory.waypoints.length - 1);
         const pixel = worldToPixel(waypoint, map);
-        const arrowLength = 9;
+        const arrowEnd = worldToPixel(
+          {
+            x: waypoint.x + Math.cos(waypoint.yaw) * orientationDisplay.arrow_length_m,
+            y: waypoint.y + Math.sin(waypoint.yaw) * orientationDisplay.arrow_length_m,
+          },
+          map,
+        );
+        const isSelected = selectedWaypointIndex === index;
+        const arrowColor = isSelected ? SELECTED_WAYPOINT_COLOR : ORIENTATION_ARROW_COLOR;
+        const arrowPoints = [
+          pixel.px * scale,
+          pixel.py * scale,
+          arrowEnd.px * scale,
+          arrowEnd.py * scale,
+        ];
+        const selectWaypoint = (event: Konva.KonvaEventObject<MouseEvent>) => {
+          event.cancelBubble = true;
+          onSelectWaypoint(index);
+        };
         return (
-          <Group key={waypoint.id ?? index}>
-            <Circle x={pixel.px * scale} y={pixel.py * scale} radius={2.6} fill={color} />
-            <Line
-              points={[
-                pixel.px * scale,
-                pixel.py * scale,
-                pixel.px * scale + Math.cos(waypoint.yaw) * arrowLength,
-                pixel.py * scale - Math.sin(waypoint.yaw) * arrowLength,
-              ]}
-              stroke={color}
-              strokeWidth={1.5}
-              lineCap="round"
+          <Group key={waypoint.id ?? index} onClick={selectWaypoint}>
+            <Circle
+              x={pixel.px * scale}
+              y={pixel.py * scale}
+              radius={isSelected ? 5 : 3}
+              fill={isSelected ? SELECTED_WAYPOINT_COLOR : color}
+              stroke="#ffffff"
+              strokeWidth={isSelected ? 1.5 : 0}
             />
+            {shouldShowOrientation && (
+              <>
+                <Arrow
+                  points={arrowPoints}
+                  stroke={ORIENTATION_HALO_COLOR}
+                  fill={ORIENTATION_HALO_COLOR}
+                  strokeWidth={4.5}
+                  pointerLength={8}
+                  pointerWidth={7}
+                  lineCap="round"
+                  lineJoin="round"
+                />
+                <Arrow
+                  points={arrowPoints}
+                  stroke={arrowColor}
+                  fill={arrowColor}
+                  strokeWidth={2}
+                  pointerLength={7}
+                  pointerWidth={6}
+                  lineCap="round"
+                  lineJoin="round"
+                />
+                {orientationDisplay.show_yaw_labels && (
+                  <Text
+                    x={pixel.px * scale + 5}
+                    y={pixel.py * scale + 5}
+                    text={`${Math.round((waypoint.yaw * 180) / Math.PI)} deg`}
+                    fontSize={10}
+                    fill={arrowColor}
+                  />
+                )}
+              </>
+            )}
           </Group>
         );
       })}

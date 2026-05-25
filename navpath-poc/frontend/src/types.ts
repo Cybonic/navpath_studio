@@ -42,6 +42,15 @@ export interface Waypoint extends WorldPoint {
 
 export type ToolMode = 'select' | 'pan' | 'line' | 'arc' | 'action';
 
+export type SmoothingMethod =
+  | 'none'
+  | 'corner_rounding'
+  | 'chaikin'
+  | 'catmull_rom'
+  | 'cubic_spline'
+  | 'bezier'
+  | 'savitzky_golay';
+
 export interface LineTrajectorySegment {
   id: string;
   type: 'line';
@@ -97,13 +106,24 @@ export type DrawingElement = LinePrimitive | ArcPrimitive | ActionNode;
 
 export interface SmoothingSettings {
   enabled: boolean;
-  method: 'corner_rounding' | 'chaikin' | 'none';
+  method: SmoothingMethod;
   waypoint_spacing: number;
   corner_radius: number;
+  smoothing_strength: number;
+  interpolation_resolution_m: number;
   preserve_endpoints: boolean;
   preserve_action_attachments: boolean;
   min_turning_radius?: number;
   max_yaw_jump_deg: number;
+  max_deviation_from_control_polyline_m?: number;
+}
+
+export interface OrientationDisplaySettings {
+  show_arrows: boolean;
+  show_yaw_labels: boolean;
+  arrow_stride: number;
+  arrow_length_m: number;
+  selected_waypoint_show_quaternion: boolean;
 }
 
 export interface ComputedTrajectory {
@@ -182,4 +202,25 @@ export interface NavPathExport {
       orientation: Quaternion;
     };
   }>;
+}
+
+export interface NativeProjectExport {
+  navpath_studio_project: {
+    version: string;
+    frame_id: string;
+    map: MapMetadata | null;
+    robot_profile: RobotProfile;
+    smoothing_settings: SmoothingSettings;
+    orientation_display: OrientationDisplaySettings;
+    control_points: ControlPoint[];
+    primitives: TrajectorySegment[];
+    action_nodes: ActionNode[];
+    generated_waypoints: {
+      spacing: number;
+      poses: Array<[number, number, number]>;
+    };
+    computed_trajectory: ComputedTrajectory | null;
+    validation?: ValidationReport;
+    export_note: string;
+  };
 }

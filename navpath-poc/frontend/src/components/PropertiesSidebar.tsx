@@ -1,15 +1,18 @@
 import { useStudioStore } from '../store/useStudioStore';
 import { distance } from '../utils/coordinates';
+import { yawToQuaternion } from '../utils/quaternions';
 
 export function PropertiesSidebar() {
   const elements = useStudioStore((state) => state.elements);
   const trajectoryPoints = useStudioStore((state) => state.trajectoryPoints);
   const trajectorySegments = useStudioStore((state) => state.trajectorySegments);
   const smoothingSettings = useStudioStore((state) => state.smoothingSettings);
+  const orientationDisplay = useStudioStore((state) => state.orientationDisplay);
   const computedTrajectory = useStudioStore((state) => state.computedTrajectory);
   const robotProfile = useStudioStore((state) => state.robotProfile);
   const statusMessage = useStudioStore((state) => state.statusMessage);
   const selectedId = useStudioStore((state) => state.selectedId);
+  const selectedWaypointIndex = useStudioStore((state) => state.selectedWaypointIndex);
   const cursorWorld = useStudioStore((state) => state.cursorWorld);
   const updateTrajectoryPoint = useStudioStore((state) => state.updateTrajectoryPoint);
   const updateTrajectorySegment = useStudioStore((state) => state.updateTrajectorySegment);
@@ -17,7 +20,12 @@ export function PropertiesSidebar() {
   const clearTrajectory = useStudioStore((state) => state.clearTrajectory);
   const computeSmoothTrajectory = useStudioStore((state) => state.computeSmoothTrajectory);
   const setSmoothingSettings = useStudioStore((state) => state.setSmoothingSettings);
+  const setOrientationDisplay = useStudioStore((state) => state.setOrientationDisplay);
+  const setSelectedWaypointIndex = useStudioStore((state) => state.setSelectedWaypointIndex);
   const selected = elements.find((element) => element.id === selectedId);
+  const selectedWaypoint =
+    selectedWaypointIndex === null ? null : computedTrajectory?.waypoints[selectedWaypointIndex] ?? null;
+  const selectedQuaternion = selectedWaypoint ? yawToQuaternion(selectedWaypoint.yaw) : null;
 
   return (
     <aside className="sidebar">
@@ -57,6 +65,20 @@ export function PropertiesSidebar() {
           <p>Action: {selected.action_type}</p>
           <p>Attachment: {selected.attachment_status}</p>
           <p>Arc length: {selected.arc_length_s_m.toFixed(3)} m</p>
+        </div>
+      )}
+      {selectedWaypoint && selectedQuaternion && (
+        <div className="details">
+          <h3>Waypoint {selectedWaypointIndex! + 1}</h3>
+          <p>
+            Position: {selectedWaypoint.x.toFixed(3)}, {selectedWaypoint.y.toFixed(3)} m
+          </p>
+          <p>Yaw: {selectedWaypoint.yaw.toFixed(3)} rad / {radiansToDegrees(selectedWaypoint.yaw).toFixed(1)} deg</p>
+          <p>
+            Quaternion: {selectedQuaternion.x.toFixed(3)}, {selectedQuaternion.y.toFixed(3)},{' '}
+            {selectedQuaternion.z.toFixed(3)}, {selectedQuaternion.w.toFixed(3)}
+          </p>
+          {selectedWaypoint.source_primitive_id && <p>Source: {selectedWaypoint.source_primitive_id}</p>}
         </div>
       )}
       <div className="metric">
@@ -180,6 +202,10 @@ export function PropertiesSidebar() {
             <option value="corner_rounding">Corner rounding</option>
             <option value="chaikin">Chaikin</option>
             <option value="none">None</option>
+            <option value="catmull_rom">Catmull-Rom</option>
+            <option value="cubic_spline">Cubic spline</option>
+            <option value="bezier">Bezier</option>
+            <option value="savitzky_golay">Savitzky-Golay</option>
           </select>
         </label>
         <label>
@@ -201,6 +227,27 @@ export function PropertiesSidebar() {
             type="number"
             value={roundForInput(smoothingSettings.corner_radius)}
             onChange={(event) => setSmoothingSettings({ corner_radius: Number(event.target.value) })}
+          />
+        </label>
+        <label>
+          Smoothing strength
+          <input
+            min="0"
+            max="1"
+            step="0.05"
+            type="number"
+            value={roundForInput(smoothingSettings.smoothing_strength)}
+            onChange={(event) => setSmoothingSettings({ smoothing_strength: Number(event.target.value) })}
+          />
+        </label>
+        <label>
+          Interpolation resolution m
+          <input
+            min="0.01"
+            step="0.01"
+            type="number"
+            value={roundForInput(smoothingSettings.interpolation_resolution_m)}
+            onChange={(event) => setSmoothingSettings({ interpolation_resolution_m: Number(event.target.value) })}
           />
         </label>
         <button
@@ -252,6 +299,72 @@ export function PropertiesSidebar() {
           </>
         )}
       </div>
+      <div className="trajectoryEditor">
+        <div className="sectionHeader">
+          <h3>Waypoint Orientations</h3>
+        </div>
+        <label className="checkboxLabel">
+          <input
+            checked={orientationDisplay.show_arrows}
+            type="checkbox"
+            onChange={(event) => setOrientationDisplay({ show_arrows: event.target.checked })}
+          />
+          Show Waypoint Orientations
+        </label>
+        <label className="checkboxLabel">
+          <input
+            checked={orientationDisplay.show_yaw_labels}
+            type="checkbox"
+            onChange={(event) => setOrientationDisplay({ show_yaw_labels: event.target.checked })}
+          />
+          Show yaw labels
+        </label>
+        <label>
+          Arrow stride
+          <input
+            min="1"
+            step="1"
+            type="number"
+            value={orientationDisplay.arrow_stride}
+            onChange={(event) => setOrientationDisplay({ arrow_stride: Number(event.target.value) })}
+          />
+        </label>
+        <label>
+          Arrow length m
+          <input
+            min="0.05"
+            step="0.05"
+            type="number"
+            value={roundForInput(orientationDisplay.arrow_length_m)}
+            onChange={(event) => setOrientationDisplay({ arrow_length_m: Number(event.target.value) })}
+          />
+        </label>
+        {computedTrajectory?.is_stale && <p className="validationWarning">Orientation overlay is stale until recompute.</p>}
+        {!computedTrajectory && <p className="muted">Compute a trajectory to inspect waypoint orientations.</p>}
+        {computedTrajectory && computedTrajectory.waypoints.length > 0 && (
+          <div className="waypointTable">
+            <div className="waypointRow waypointHeader">
+              <span>#</span>
+              <span>X</span>
+              <span>Y</span>
+              <span>Yaw deg</span>
+            </div>
+            {computedTrajectory.waypoints.map((waypoint, index) => (
+              <button
+                className={selectedWaypointIndex === index ? 'waypointRow selectedWaypoint' : 'waypointRow'}
+                key={waypoint.id ?? index}
+                onClick={() => setSelectedWaypointIndex(index)}
+                type="button"
+              >
+                <span>{index + 1}</span>
+                <span>{waypoint.x.toFixed(2)}</span>
+                <span>{waypoint.y.toFixed(2)}</span>
+                <span>{radiansToDegrees(waypoint.yaw).toFixed(1)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </aside>
   );
 }
@@ -263,4 +376,8 @@ function roundForInput(value: number): number {
 function minimumArcRadius(start?: { x: number; y: number }, end?: { x: number; y: number }): number {
   if (!start || !end) return 0.01;
   return Number((Math.hypot(end.x - start.x, end.y - start.y) / 2).toFixed(3));
+}
+
+function radiansToDegrees(radians: number): number {
+  return (radians * 180) / Math.PI;
 }

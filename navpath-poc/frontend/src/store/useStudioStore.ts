@@ -6,6 +6,7 @@ import type {
   ControlPoint,
   DrawingElement,
   MapMetadata,
+  OrientationDisplaySettings,
   RobotProfile,
   SmoothingSettings,
   ToolMode,
@@ -35,8 +36,10 @@ interface StudioState {
   smoothingSettings: SmoothingSettings;
   robotProfile: RobotProfile;
   computedTrajectory: ComputedTrajectory | null;
+  orientationDisplay: OrientationDisplaySettings;
   elements: DrawingElement[];
   selectedId: string | null;
+  selectedWaypointIndex: number | null;
   cursorWorld: WorldPoint | null;
   draftPoint: WorldPoint | null;
   statusMessage: string | null;
@@ -44,6 +47,8 @@ interface StudioState {
   setTool: (tool: ToolMode) => void;
   setSpacing: (spacing: number) => void;
   setSmoothingSettings: (settings: Partial<SmoothingSettings>) => void;
+  setOrientationDisplay: (settings: Partial<OrientationDisplaySettings>) => void;
+  setSelectedWaypointIndex: (index: number | null) => void;
   computeSmoothTrajectory: () => void;
   addActionAtPoint: (point: WorldPoint) => void;
   setZoom: (zoom: number) => void;
@@ -59,6 +64,7 @@ interface StudioState {
   updateTrajectorySegment: (index: number, segment: TrajectorySegment) => void;
   removeTrajectoryPoint: (index: number) => void;
   clearTrajectory: () => void;
+  clearAllContent: () => void;
   addElement: (element: DrawingElement) => void;
   setSelectedId: (id: string | null) => void;
   setCursorWorld: (point: WorldPoint | null) => void;
@@ -98,10 +104,21 @@ const defaultSmoothingSettings: SmoothingSettings = {
   method: 'corner_rounding',
   waypoint_spacing: 0.1,
   corner_radius: 0.5,
+  smoothing_strength: 0.5,
+  interpolation_resolution_m: 0.05,
   preserve_endpoints: true,
   preserve_action_attachments: true,
   min_turning_radius: defaultRobotProfile.motion_limits.min_turning_radius,
   max_yaw_jump_deg: defaultRobotProfile.path_constraints.max_yaw_jump_deg,
+  max_deviation_from_control_polyline_m: 0.5,
+};
+
+const defaultOrientationDisplay: OrientationDisplaySettings = {
+  show_arrows: true,
+  show_yaw_labels: false,
+  arrow_stride: 1,
+  arrow_length_m: 0.25,
+  selected_waypoint_show_quaternion: true,
 };
 
 export const useStudioStore = create<StudioState>((set, get) => ({
@@ -116,8 +133,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   smoothingSettings: defaultSmoothingSettings,
   robotProfile: defaultRobotProfile,
   computedTrajectory: null,
+  orientationDisplay: defaultOrientationDisplay,
   elements: [],
   selectedId: null,
+  selectedWaypointIndex: null,
   cursorWorld: null,
   draftPoint: null,
   statusMessage: null,
@@ -129,6 +148,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       trajectoryPoints: [],
       trajectorySegments: [],
       computedTrajectory: null,
+      selectedWaypointIndex: null,
       selectedId: null,
       statusMessage: null,
       zoom: 1,
@@ -152,12 +172,24 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       };
       nextSettings.waypoint_spacing = clampSpacing(nextSettings.waypoint_spacing, state.robotProfile);
       nextSettings.corner_radius = Math.max(0.01, nextSettings.corner_radius);
+      nextSettings.smoothing_strength = clampUnit(nextSettings.smoothing_strength);
+      nextSettings.interpolation_resolution_m = Math.max(0.01, nextSettings.interpolation_resolution_m);
       return {
         smoothingSettings: nextSettings,
         spacing: nextSettings.waypoint_spacing,
         ...staleComputedState(state),
       };
     }),
+  setOrientationDisplay: (settings) =>
+    set((state) => ({
+      orientationDisplay: {
+        ...state.orientationDisplay,
+        ...settings,
+        arrow_stride: Math.max(1, Math.round(settings.arrow_stride ?? state.orientationDisplay.arrow_stride)),
+        arrow_length_m: Math.max(0.05, settings.arrow_length_m ?? state.orientationDisplay.arrow_length_m),
+      },
+    })),
+  setSelectedWaypointIndex: (index) => set({ selectedWaypointIndex: index, selectedId: null }),
   computeSmoothTrajectory: () =>
     set((state) => {
       const smoothResult = computeSmoothWaypoints(state.trajectoryPoints, state.smoothingSettings);
@@ -182,6 +214,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         computedTrajectory: trajectory,
         elements: reattachActionNodes(state.elements, trajectory),
         selectedId: null,
+        selectedWaypointIndex: null,
         statusMessage:
           validation.status === 'invalid'
             ? 'Computed trajectory has blocking validation errors.'
@@ -220,6 +253,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       return {
         elements: [...state.elements, action],
         selectedId: action.id,
+        selectedWaypointIndex: null,
         statusMessage: 'Action node snapped to computed trajectory.',
       };
     }),
@@ -238,6 +272,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
           ? []
           : [...state.trajectorySegments, { id: createId('segment'), type: 'line' }],
       selectedId: null,
+      selectedWaypointIndex: null,
       draftPoint: null,
       statusMessage: null,
       ...staleComputedState(state),
@@ -258,6 +293,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
               },
             ],
       selectedId: null,
+      selectedWaypointIndex: null,
       draftPoint: null,
       statusMessage: null,
       ...staleComputedState(state),
@@ -290,16 +326,28 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       trajectorySegments: [],
       computedTrajectory: null,
       elements: markActionNodes(state.elements, 'invalid'),
+      selectedWaypointIndex: null,
       draftPoint: null,
       statusMessage: null,
     })),
+  clearAllContent: () =>
+    set({
+      trajectoryPoints: [],
+      trajectorySegments: [],
+      computedTrajectory: null,
+      elements: [],
+      selectedId: null,
+      selectedWaypointIndex: null,
+      draftPoint: null,
+      statusMessage: 'Cleared all trajectory content. Loaded map and robot profile were preserved.',
+    }),
   addElement: (element) =>
     set((state) => ({
       elements: [...state.elements, element],
       selectedId: element.id,
       draftPoint: null,
     })),
-  setSelectedId: (id) => set({ selectedId: id }),
+  setSelectedId: (id) => set({ selectedId: id, selectedWaypointIndex: null }),
   setCursorWorld: (point) => set({ cursorWorld: point }),
   setDraftPoint: (point) => set({ draftPoint: point }),
   allWaypoints: () => {
@@ -367,6 +415,11 @@ function clampZoom(zoom: number): number {
 function clampSpacing(spacing: number, robotProfile: RobotProfile): number {
   if (!Number.isFinite(spacing)) return robotProfile.path_constraints.default_spacing;
   return Math.min(robotProfile.path_constraints.max_spacing, Math.max(robotProfile.path_constraints.min_spacing, spacing));
+}
+
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.min(1, Math.max(0, value));
 }
 
 export function buildTrajectoryWaypoints(

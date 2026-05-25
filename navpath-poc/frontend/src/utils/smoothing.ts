@@ -24,17 +24,42 @@ export function computeSmoothWaypoints(controlPoints: ControlPoint[], settings: 
   }
 
   const roughPolyline = removeDuplicatePoints(controlPoints);
-  const smoothedPolyline =
-    settings.enabled && settings.method === 'corner_rounding' && roughPolyline.length > 2
-      ? buildCornerRoundedPolyline(roughPolyline, settings, spacing, warnings)
-      : settings.enabled && settings.method === 'chaikin' && roughPolyline.length > 2
-        ? buildChaikinPolyline(roughPolyline)
-        : roughPolyline;
+  const smoothedPolyline = buildSmoothedPolyline(roughPolyline, settings, spacing, warnings);
 
   return {
     waypoints: resamplePolyline(smoothedPolyline, spacing),
     warnings,
   };
+}
+
+function buildSmoothedPolyline(
+  points: WorldPoint[],
+  settings: SmoothingSettings,
+  spacing: number,
+  warnings: ValidationIssue[],
+): WorldPoint[] {
+  if (!settings.enabled || settings.method === 'none' || points.length < 3) {
+    return points;
+  }
+
+  const interpolationResolution = clampSpacing(settings.interpolation_resolution_m);
+
+  switch (settings.method) {
+    case 'corner_rounding':
+      return buildCornerRoundedPolyline(points, settings, spacing, warnings);
+    case 'chaikin':
+      return buildChaikinPolyline(points, settings.smoothing_strength);
+    case 'catmull_rom':
+      return buildCatmullRomPolyline(points, interpolationResolution, settings.smoothing_strength);
+    case 'cubic_spline':
+      return buildCubicSplinePolyline(points, interpolationResolution);
+    case 'bezier':
+      return buildBezierPolyline(points, interpolationResolution, settings.smoothing_strength);
+    case 'savitzky_golay':
+      return buildSavitzkyGolayPolyline(points, interpolationResolution, settings.smoothing_strength);
+    default:
+      return points;
+  }
 }
 
 export function resamplePolyline(points: WorldPoint[], spacing: number): Waypoint[] {
@@ -166,22 +191,227 @@ function buildCornerRoundedPolyline(
   return output;
 }
 
-function buildChaikinPolyline(points: WorldPoint[]): WorldPoint[] {
+function buildChaikinPolyline(points: WorldPoint[], smoothingStrength: number): WorldPoint[] {
+  const weight = Math.min(0.45, Math.max(0.05, smoothingStrength * 0.45));
   const output: WorldPoint[] = [points[0]];
   for (let index = 0; index < points.length - 1; index += 1) {
     const start = points[index];
     const end = points[index + 1];
     output.push({
-      x: start.x * 0.75 + end.x * 0.25,
-      y: start.y * 0.75 + end.y * 0.25,
+      x: start.x * (1 - weight) + end.x * weight,
+      y: start.y * (1 - weight) + end.y * weight,
     });
     output.push({
-      x: start.x * 0.25 + end.x * 0.75,
-      y: start.y * 0.25 + end.y * 0.75,
+      x: start.x * weight + end.x * (1 - weight),
+      y: start.y * weight + end.y * (1 - weight),
     });
   }
   output.push(points[points.length - 1]);
   return output;
+}
+
+function buildCatmullRomPolyline(points: WorldPoint[], resolution: number, smoothingStrength: number): WorldPoint[] {
+  const tension = 1 - Math.min(1, Math.max(0, smoothingStrength)) * 0.75;
+  const output: WorldPoint[] = [points[0]];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[Math.max(0, index - 1)];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[Math.min(points.length - 1, index + 2)];
+    const samples = Math.max(2, Math.ceil(distance(p1, p2) / resolution));
+
+    for (let sample = 1; sample <= samples; sample += 1) {
+      const t = sample / samples;
+      pushIfDistinct(output, catmullRomPoint(p0, p1, p2, p3, t, tension));
+    }
+  }
+
+  return output;
+}
+
+function buildBezierPolyline(points: WorldPoint[], resolution: number, smoothingStrength: number): WorldPoint[] {
+  const handleScale = Math.min(0.45, Math.max(0.05, smoothingStrength * 0.35));
+  const output: WorldPoint[] = [points[0]];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const previous = points[Math.max(0, index - 1)];
+    const next = points[Math.min(points.length - 1, index + 2)];
+    const control1 = {
+      x: start.x + (end.x - previous.x) * handleScale,
+      y: start.y + (end.y - previous.y) * handleScale,
+    };
+    const control2 = {
+      x: end.x - (next.x - start.x) * handleScale,
+      y: end.y - (next.y - start.y) * handleScale,
+    };
+    const samples = Math.max(2, Math.ceil(distance(start, end) / resolution));
+
+    for (let sample = 1; sample <= samples; sample += 1) {
+      const t = sample / samples;
+      pushIfDistinct(output, cubicBezierPoint(start, control1, control2, end, t));
+    }
+  }
+
+  return output;
+}
+
+function buildSavitzkyGolayPolyline(points: WorldPoint[], resolution: number, smoothingStrength: number): WorldPoint[] {
+  const sampled = resamplePolyline(points, resolution).map(({ x, y }) => ({ x, y }));
+  if (sampled.length < 5) return sampled;
+
+  const strength = Math.min(1, Math.max(0, smoothingStrength));
+  const output: WorldPoint[] = [sampled[0], sampled[1]];
+
+  for (let index = 2; index < sampled.length - 2; index += 1) {
+    const filtered = {
+      x:
+        (-3 * sampled[index - 2].x +
+          12 * sampled[index - 1].x +
+          17 * sampled[index].x +
+          12 * sampled[index + 1].x -
+          3 * sampled[index + 2].x) /
+        35,
+      y:
+        (-3 * sampled[index - 2].y +
+          12 * sampled[index - 1].y +
+          17 * sampled[index].y +
+          12 * sampled[index + 1].y -
+          3 * sampled[index + 2].y) /
+        35,
+    };
+    output.push({
+      x: sampled[index].x * (1 - strength) + filtered.x * strength,
+      y: sampled[index].y * (1 - strength) + filtered.y * strength,
+    });
+  }
+
+  output.push(sampled[sampled.length - 2], sampled[sampled.length - 1]);
+  return output;
+}
+
+function buildCubicSplinePolyline(points: WorldPoint[], resolution: number): WorldPoint[] {
+  const distances = cumulativeDistances(points);
+  const totalLength = distances[distances.length - 1];
+  if (totalLength <= EPSILON) return points;
+
+  const splineX = buildNaturalCubicSpline(distances, points.map((point) => point.x));
+  const splineY = buildNaturalCubicSpline(distances, points.map((point) => point.y));
+  const samples = Math.max(2, Math.ceil(totalLength / resolution));
+  const output: WorldPoint[] = [];
+
+  for (let sample = 0; sample <= samples; sample += 1) {
+    const s = (totalLength * sample) / samples;
+    output.push({ x: evaluateSpline(splineX, s), y: evaluateSpline(splineY, s) });
+  }
+
+  output[0] = points[0];
+  output[output.length - 1] = points[points.length - 1];
+  return output;
+}
+
+function catmullRomPoint(
+  p0: WorldPoint,
+  p1: WorldPoint,
+  p2: WorldPoint,
+  p3: WorldPoint,
+  t: number,
+  tension: number,
+): WorldPoint {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const m1 = { x: (p2.x - p0.x) * tension, y: (p2.y - p0.y) * tension };
+  const m2 = { x: (p3.x - p1.x) * tension, y: (p3.y - p1.y) * tension };
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+  return {
+    x: h00 * p1.x + h10 * m1.x + h01 * p2.x + h11 * m2.x,
+    y: h00 * p1.y + h10 * m1.y + h01 * p2.y + h11 * m2.y,
+  };
+}
+
+function cubicBezierPoint(
+  start: WorldPoint,
+  control1: WorldPoint,
+  control2: WorldPoint,
+  end: WorldPoint,
+  t: number,
+): WorldPoint {
+  const inverse = 1 - t;
+  return {
+    x:
+      inverse ** 3 * start.x +
+      3 * inverse * inverse * t * control1.x +
+      3 * inverse * t * t * control2.x +
+      t ** 3 * end.x,
+    y:
+      inverse ** 3 * start.y +
+      3 * inverse * inverse * t * control1.y +
+      3 * inverse * t * t * control2.y +
+      t ** 3 * end.y,
+  };
+}
+
+function cumulativeDistances(points: WorldPoint[]): number[] {
+  const distances = [0];
+  for (let index = 1; index < points.length; index += 1) {
+    distances.push(distances[index - 1] + distance(points[index - 1], points[index]));
+  }
+  return distances;
+}
+
+interface CubicSpline {
+  x: number[];
+  a: number[];
+  b: number[];
+  c: number[];
+  d: number[];
+}
+
+function buildNaturalCubicSpline(x: number[], y: number[]): CubicSpline {
+  const n = x.length - 1;
+  const a = y.slice();
+  const b = new Array<number>(n).fill(0);
+  const d = new Array<number>(n).fill(0);
+  const h = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i += 1) h[i] = x[i + 1] - x[i];
+
+  const alpha = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i += 1) {
+    alpha[i] = (3 / h[i]) * (a[i + 1] - a[i]) - (3 / h[i - 1]) * (a[i] - a[i - 1]);
+  }
+
+  const c = new Array<number>(n + 1).fill(0);
+  const l = new Array<number>(n + 1).fill(1);
+  const mu = new Array<number>(n + 1).fill(0);
+  const z = new Array<number>(n + 1).fill(0);
+
+  for (let i = 1; i < n; i += 1) {
+    l[i] = 2 * (x[i + 1] - x[i - 1]) - h[i - 1] * mu[i - 1];
+    mu[i] = h[i] / l[i];
+    z[i] = (alpha[i] - h[i - 1] * z[i - 1]) / l[i];
+  }
+
+  for (let j = n - 1; j >= 0; j -= 1) {
+    c[j] = z[j] - mu[j] * c[j + 1];
+    b[j] = (a[j + 1] - a[j]) / h[j] - (h[j] * (c[j + 1] + 2 * c[j])) / 3;
+    d[j] = (c[j + 1] - c[j]) / (3 * h[j]);
+  }
+
+  return { x, a, b, c, d };
+}
+
+function evaluateSpline(spline: CubicSpline, value: number): number {
+  const segment = Math.min(
+    spline.x.length - 2,
+    Math.max(0, spline.x.findIndex((x, index) => index < spline.x.length - 1 && value <= spline.x[index + 1])),
+  );
+  const dx = value - spline.x[segment];
+  return spline.a[segment] + spline.b[segment] * dx + spline.c[segment] * dx * dx + spline.d[segment] * dx * dx * dx;
 }
 
 function removeDuplicatePoints<T extends WorldPoint>(points: T[]): T[] {

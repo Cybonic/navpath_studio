@@ -26,9 +26,17 @@ later Nav2 integration.
 - Mark computed trajectories stale after control-point or smoothing edits.
 - Snap action nodes onto the current computed trajectory.
 - Generate computed waypoints at configurable meter spacing.
+- Select smoothing method `none`, `corner_rounding`, `chaikin`,
+  `catmull_rom`, `cubic_spline`, `bezier`, or `savitzky_golay`, with smoothing
+  strength and interpolation settings stored in project metadata.
+- Toggle waypoint orientation arrows, adjust arrow stride/density, and inspect
+  waypoint yaw plus quaternion values.
 - Validate waypoint count, spacing, duplicate points, yaw jumps, and map extent.
 - Export the latest computed trajectory as `nav_msgs/Path`-compatible JSON and
   YAML.
+- Export native project JSON that preserves rough control points, smoothing
+  settings, robot profile, action nodes, generated waypoints, and validation.
+- Clear all user-created trajectory content without reloading the map.
 - Run the full app from one Docker container.
 
 ## Run With Docker
@@ -89,6 +97,10 @@ After loading it in the UI, draw a rough path, click **Compute Smooth
 Trajectory**, and confirm the exported path uses `frame_id: map` and meter
 coordinates.
 
+Use **Clear All Content** to remove rough points, computed trajectories,
+generated waypoints, action nodes, validation state, and export previews while
+keeping the loaded map and robot profile.
+
 ## Backend Development
 
 ```bash
@@ -123,6 +135,13 @@ The exported path uses ROS 2 `nav_msgs/Path` semantics:
 - `z` is set to `0.0`.
 - Orientation is a planar yaw quaternion.
 
+The waypoint orientation overlay and waypoint table use the same yaw values that
+are converted into export quaternions.
+
+Native project JSON is intentionally separate from `nav_msgs/Path`: it preserves
+design-time information that Nav2 path messages do not represent, such as
+control points, smoothing settings, robot profile, validation, and action nodes.
+
 The app intentionally avoids collision checking in this PoC. A path that exports
 successfully is not automatically safe for a real robot. Production use still
 requires localization, costmaps, footprint/inflation validation, controller
@@ -138,4 +157,5 @@ collision-free, dynamically feasible, or safe for execution on a real robot.
 - No undo/redo.
 - No direct Nav2 action client integration.
 - No real collision checking against occupied cells yet.
-- Corner smoothing is geometric only and does not prove controller feasibility.
+- Smoothing methods are geometric PoC implementations only and do not prove
+  controller feasibility.
